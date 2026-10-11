@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>dogear</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <button class="icon" id="menu" title="Projects, files, history" aria-label="Menu">
+      <svg viewBox="0 0 16 16" width="16" height="16"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+    <div class="brand">
+      <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true"><path d="M1 1h11l5 5v11H1z" fill="currentColor"/><path d="M12 1v5h5z" fill="currentColor" opacity=".4"/></svg>
+      <span>dogear</span>
+    </div>
+    <input id="root" class="path" spellcheck="false" title="Project directory">
+    <div class="ctrls">
+      <select id="model" title="Model"></select>
+      <div class="seg" id="mode" role="radiogroup" aria-label="Permissions">
+        <button data-v="ask" title="Confirm every edit and command">Review</button>
+        <button data-v="edit" title="Edit files freely, confirm commands (Shift+Tab)">Edits</button>
+        <button data-v="auto" title="Never ask">Auto</button>
+      </div>
+      <div class="meter" id="meter" title="Context window usage"><span class="bar-bg"><i></i></span><b>0 / 32k</b></div>
+      <button class="icon" id="ws-toggle" title="Workspace: browser, editor, terminal" aria-label="Workspace">
+        <svg viewBox="0 0 16 16" width="16" height="16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9.5 3v10" stroke="currentColor" stroke-width="1.5"/></svg>
+      </button>
+      <button class="icon" id="gear" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="pop" id="pop" hidden>
+      <label>Context window
+        <select id="ctx"><option value="16384">16k</option><option value="32768">32k</option><option value="65536">64k</option><option value="131072">128k</option></select>
+      </label>
+      <label class="row"><input type="checkbox" id="think"><span>Reasoning before answering</span></label>
+      <button id="theme" class="row">Switch light / dark</button>
+    </div>
+  </header>
+
+  <main class="ide" id="ide">
+    <section class="panel chat">
+      <div class="scroll" id="log"></div>
+      <div class="spin" id="spin" hidden><i></i><span id="spin-t"></span></div>
+      <div class="slash" id="slash" hidden></div>
+      <form id="composer">
+        <textarea id="input" rows="1" placeholder="Describe a task, or type / for commands" autofocus></textarea>
+      </form>
+      <div class="hint"><span id="h-mode"></span><span>⇧⇥ mode</span><span>esc stop</span><span>↵ send</span></div>
+    </section>
+
+    <section class="panel work" id="work" hidden>
+      <nav class="tabs" id="etabs"></nav>
+      <div class="stage">
+        <div class="view on" id="v-preview">
+          <div class="ptool">
+            <button class="mini" id="b-back" title="Back">←</button>
+            <button class="mini" id="b-fwd" title="Forward">→</button>
+            <button class="mini" id="b-reload" title="Reload">↻</button>
+            <input id="b-url" spellcheck="false" placeholder="Enter a URL" title="Address">
+            <button class="mini" id="b-home" title="Project preview">⌂</button>
+            <button class="mini" id="b-ext" title="Open in your own browser">↗</button>
+            <span class="devs">
+              <button data-w="390" data-h="844">Phone</button><button data-w="820" data-h="1180">Tablet</button><button data-w="1280" data-h="800" class="on">Desktop</button>
+            </span>
+          </div>
+          <div class="screen" id="screen">
+            <div class="box wait" id="bbox">
+              <canvas id="bscreen" width="1280" height="800"></canvas>
+              <div class="ov" id="bov" tabindex="0">
+                <div class="cur" id="bcur" hidden>
+                  <svg viewBox="0 0 16 20" width="16" height="20"><path d="M1 1l12 8-5 1.5L11 18l-2.5 1-3-7.5L1 15z" fill="currentColor" stroke="#fff" stroke-width="1.2" stroke-linejoin="round"/></svg>
+                  <span id="bcur-l"></span>
+                </div>
+              </div>
+              <div class="need" id="need" hidden><b>Your turn</b><span id="need-t"></span><button id="need-go">Continue</button></div>
+              <div class="ban" id="ban" hidden><i></i><span>Agent is using the browser</span></div>
+            </div>
+            <div class="bempty" id="bempty"><span>No page open</span><button id="b-start">Open project preview</button></div>
+          </div>
+        </div>
+        <div class="view" id="v-code"><div class="code" id="code"></div><div class="status" id="cstat"></div></div>
+      </div>
+      <div class="term" id="term-wrap" hidden>
+        <div class="term-head"><span>Terminal</span><span id="term-run"></span><button class="mini" id="term-clear" title="Clear">Clear</button></div>
+        <div class="term-body" id="term"></div>
+      </div>
+    </section>
+
+    <aside class="panel side drawer" id="drawer" hidden>
+      <div class="side-scroll">
+        <section><h2>Explorer <button class="mini" id="refresh" title="Refresh">↻</button></h2><div class="tree" id="tree"></div></section>
+        <section id="todo-sec" hidden><h2>Tasks <small id="todo-count"></small></h2><ul class="todos" id="todos"></ul></section>
+        <section><h2>MCP <button class="mini" id="mcp-reload" title="Reload servers">↻</button></h2><div id="mcp"></div></section>
+        <section><h2>History <button class="mini" id="new" title="New session">＋</button></h2><ul class="hist" id="hist"></ul></section>
+      </div>
+    </aside>
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
