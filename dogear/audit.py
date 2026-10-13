@@ -142,6 +142,22 @@ AUDIT_JS = r"""
   const body = document.body, bw = Math.max(...[...body.children].filter(vis).map(c => R(c).width), 0);
   if (vw >= 1000 && bw && bw < vw * .4) add("low", "narrow", `content is a ${Math.round(bw)}px column in a ${vw}px viewport`, null);
 
+  // 12. card soup: a site-like page where most content sits in identical bordered, rounded, filled boxes
+  const siteLike = !!document.querySelector("footer") && (() => { const h = document.querySelector("h1"); return h && parseFloat(getComputedStyle(h).fontSize) >= 32; })();
+  if (siteLike) {
+    const boxes = els.filter(e => {
+      if (isSkip(e) || !vis(e)) return false;
+      const s = getComputedStyle(e), r = R(e);
+      return r.width > 140 && r.height > 60 && r.width < vw * .98 && parseFloat(s.borderTopWidth) >= 1 && s.borderTopStyle !== "none" && parseFloat(s.borderTopLeftRadius) >= 4
+        && e.textContent.trim().length > 12 && !/^(INPUT|BUTTON|SELECT|TEXTAREA|TABLE|A)$/.test(e.tagName);
+    });
+    const sig = e => { const s = getComputedStyle(e); return [s.borderTopWidth, s.borderTopColor, s.borderTopLeftRadius].join("|"); };
+    const groups = {};
+    boxes.forEach(e => (groups[sig(e)] = groups[sig(e)] || []).push(e));
+    const biggest = Object.values(groups).sort((a, b) => b.length - a.length)[0] || [];
+    if (biggest.length >= 5) add("medium", "card-soup", `${biggest.length} content blocks share one bordered, rounded box style; the page reads as a template. Use ruled lists, tables, full-bleed bands or large type instead of boxing everything`, biggest[0]);
+  }
+
   return { vw, vh, findings: F };
 })()
 """

@@ -16,6 +16,20 @@ Tools and dashboards follow the neutral rules below. A page for a real business,
 
 Never: three identical rounded cards in a row; gradient rectangles standing in for photos; faint outline drawings in a box; a headline of the form "X. Y." (two short slogans); dark background with 1px-bordered cards as the default; icons-in-circles. Products go in a list or table with large price numerals, or as one colored block each carrying a typographic label. If you draw something, draw it in inline SVG with flat, full-contrast shapes at large scale, or let type and color blocks carry the page.
 
+## Every section carries the concept
+The hero is rarely the problem; the lower half is where pages fall back to the template. Plan each section's component in your brief (one line per section) and keep to it:
+- Boxes are not the default. Bordered, rounded, white-filled boxes may appear at most twice on a page. Information goes into one of these instead: a ruled list (hairline rows, label left, value right in the mono face), a table, a full-bleed band with its own background, a big-numeral column, a split with a large color block, a stamped label.
+- Hours: a ruled list with the day left and the time right, the open days stronger than the closed ones. Address: set it large, as text, with a small note on how to find the place; no box.
+- Offers and prices: the price is the largest thing in its row. Name, taste and price share one baseline grid.
+- Rhythm: alternate the background tone between sections (paper, tinted, ink), use at least one full-bleed band, vary alignment (not every title centered above a grid).
+- The footer is designed too: a large wordmark, a color band or a ruled list of links, not a gray strip with small print.
+- The signature move from the brief appears in every section at least as an echo (same numeral style, same label shape, same rule weight).
+
+## Copy
+- Use only facts from the request: names, prices, hours, address, products. Do not invent numbers, years, origins, certifications, shipping times or promises. If a section needs a fact you do not have, write copy that does not need it and say so under "Assumptions".
+- Check the language like an editor before you finish: article and ending agreement, singular and plural ("jede zweite Woche", "alle zwei Wochen"), compounds that really exist ("Abo-Bindung", not "Abo-Bindlichkeit"). Read the strings in the file once, slowly.
+- Headlines state something specific and short. No two-slogan pattern ("Kaffee, der schmeckt. Direkt aus Altona.").
+
 ## Process (always)
 1. Before coding, decide what the page is for and its ONE primary action. Write real content: no lorem ipsum, no "Item 1".
 2. Put colors, spacing and type in CSS custom properties first, then build.

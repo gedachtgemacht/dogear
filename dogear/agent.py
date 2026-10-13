@@ -18,7 +18,7 @@ from . import present as pres
 from . import checkpoint as cp
 from . import profiles
 from .audit import AUDIT_JS, format_report
-from . import devtools_code, devtools_run, memory as mem
+from . import devtools_code, devtools_run, memory as mem, copycheck
 from .devtools_run import READ_ACTIONS as GIT_READ
 from . import ultra as _ultra_mod
 from .ultra import Ultra
@@ -792,7 +792,12 @@ class Agent:
             gate = ""
             if not _review and not cancelled and final_idx is not None and mode != "plan" and any(
                     p.lower().endswith((".html", ".htm", ".css", ".js")) for p in info["changes"]):
-                gate = await self._audit_changed(ctx.root, list(info["changes"]))
+                users = [m["content"] for m in s["messages"] if m["role"] == "user" and not m.get("review") and isinstance(m.get("content"), str)]
+                brief = "\n\n".join(users)
+                brief = brief if len(brief) <= 3500 else brief[:1200] + "\n…\n" + brief[-2300:]
+                wrote_page = any(p.lower().endswith((".html", ".htm")) and (v.get("created") or v.get("added", 0) >= 40)
+                                 for p, v in info["changes"].items())    # do not proofread a page the run only touched
+                gate = await self._audit_changed(ctx.root, list(info["changes"]), model, brief if wrote_page else "")
                 if gate:
                     await self.send({"type": "notice", "text": "Design audit found problems; running a fix pass."})
             if not _review and not cancelled and final_idx is not None and (gate or (
@@ -804,7 +809,9 @@ class Agent:
                 prompt = REVIEW_PROMPT.format(task=text[:2000])
                 if gate:
                     prompt += ("\n\nAn automatic measured design audit of your page found these problems:\n" + gate +
-                               "\n\nFix every HIGH and MEDIUM finding. Then run browser_audit yourself and repeat until it is clean "
+                               "\n\nFix every HIGH and MEDIUM finding. Copy-check findings are text problems: correct the wording as suggested; "
+                               "for a claim that is not in the client's request, remove it or rewrite the sentence without the invented fact "
+                               "(never invent facts, numbers or promises). Then run browser_audit yourself and repeat until it is clean "
                                "(at most three rounds). Mention anything you decided not to fix and why.")
                 await self.turn(prompt, model, think, mode, num_ctx, False, True)
                 return
@@ -846,7 +853,7 @@ class Agent:
         except Exception:
             pass
 
-    async def _audit_changed(self, root: Path, changed: list[str]) -> str:
+    async def _audit_changed(self, root: Path, changed: list[str], model: str = "", brief: str = "") -> str:
         """Quality gate: measure the page the run produced. Returns the report if it has HIGH/MEDIUM findings, else ''."""
         b = self.browser
         if b is None:
@@ -862,6 +869,7 @@ class Agent:
         if not page:
             return ""
         old = (b.vw, b.vh)
+        blocks: list[str] = []
         try:
             await b.ensure()
             await b.navigate(f"http://127.0.0.1:{br.PREVIEW_PORT}/@{self.session['id']}/{page}")
@@ -872,6 +880,8 @@ class Agent:
                 await b.set_viewport(w, h)
                 await asyncio.sleep(0.4)
                 results.append(await b.eval(AUDIT_JS))
+                if w == 1280 and brief:
+                    blocks = await b.eval(copycheck.TEXT_JS)
         except Exception:
             return ""
         finally:
@@ -880,7 +890,15 @@ class Agent:
             except Exception:
                 pass
         serious = any(f["sev"] in ("high", "medium") for r in results for f in r["findings"])
-        return f"Page: {page}\n" + format_report(results) if serious else ""
+        copy = []
+        if brief and blocks:
+            try:
+                copy = await copycheck.check(self.client, llm.URL, model, brief, blocks)
+            except Exception:
+                copy = []
+        if not serious and not copy:
+            return ""
+        return f"Page: {page}\n" + format_report(results) + ("\n" + copycheck.format_report(copy) if copy else "")
 
     async def make_titles(self, s: dict) -> dict:
         """Short titles for the outline, written by the helper model. Cached in the session."""
