@@ -18,7 +18,7 @@ TEXT_JS = r"""
     if (skip.has(e.tagName.toUpperCase()) || !vis(e)) return;
     const kids = [...e.children].filter(c => !skip.has(c.tagName.toUpperCase()));
     const own = [...e.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(" ").replace(/\s+/g, " ").trim();
-    const inline = kids.length && kids.every(c => /^(A|B|I|EM|STRONG|SPAN|SMALL|BR|MARK|ABBR|SUB|SUP|TIME)$/i.test(c.tagName));
+    const inline = kids.length && kids.every(c => /^(A|B|I|EM|STRONG|SPAN|SMALL|BR|MARK|ABBR|SUB|SUP|TIME)$/i.test(c.tagName) && /^inline/.test(getComputedStyle(c).display));
     if (own && (!kids.length || inline)) {
       const t = e.innerText.replace(/\s+/g, " ").trim();
       if (t.length >= 2 && !seen.has(t)) { seen.add(t); out.push(t.slice(0, 400)); }
@@ -38,6 +38,7 @@ LANG_SYSTEM = (
     "definite errors in the language the block is written in: wrong word forms, number/case/gender agreement (for German: article, adjective and noun "
     "endings, singular vs plural, e.g. 'jede zweite Woche' not 'jedes zweite Wochen'), compounds that do not exist or have the wrong gender "
     "('die Abo-Bindung', not 'Abo-Bindlichkeit'), spelling, punctuation. For each error quote the faulty words exactly as written and give the corrected phrase. "
+    "Name the rule that is broken in `problem`. If the quoted text is grammatical and correct, do not report it, and never offer a different wording of correct text. "
     "Do not report style preferences, brand names, product names, deliberate fragments or words that are merely unusual. "
     "Return one entry per block; use an empty list for blocks without errors.")
 
@@ -51,7 +52,7 @@ CLAIM_SYSTEM = (
 
 LANG_SCHEMA = {"type": "object", "required": ["blocks"], "properties": {"blocks": {"type": "array", "items": {
     "type": "object", "required": ["block", "errors"], "properties": {"block": {"type": "integer"}, "errors": {"type": "array", "items": {
-        "type": "object", "required": ["quote", "fix"], "properties": {"quote": {"type": "string"}, "fix": {"type": "string"}, "problem": {"type": "string"}}}}}}}}}
+        "type": "object", "required": ["quote", "problem", "fix"], "properties": {"quote": {"type": "string"}, "problem": {"type": "string"}, "fix": {"type": "string"}}}}}}}}}
 
 CLAIM_SCHEMA = {"type": "object", "required": ["blocks"], "properties": {"blocks": {"type": "array", "items": {
     "type": "object", "required": ["block", "claims"], "properties": {"block": {"type": "integer"}, "claims": {"type": "array", "items": {
@@ -107,7 +108,7 @@ async def check(client, url: str, model: str, brief: str, blocks: list[str]) -> 
         quote, fix = str(quote or "").strip(), str(fix or "").strip()
         if not isinstance(i, int) or not (0 <= i < len(blocks)) or len(quote) < 3 or _norm(quote) not in _norm(blocks[i]):
             return                                          # not literally on the page: the model made it up
-        if kind == "language" and (not fix or _norm(fix) == _norm(quote)):
+        if kind == "language" and (not fix or _norm(fix) == _norm(quote) or len(str(problem or "").strip()) < 8):
             return                                          # no concrete correction, or nothing changes
         if kind == "claim":
             nums = _digits(quote)

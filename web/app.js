@@ -483,11 +483,35 @@ function reloadPreview() { clearTimeout(pvTimer); pvTimer = setTimeout(() => sen
 function agentBusy(on) { $("#ban").hidden = !on; }
 function initBrowser() {
   let last = 0;
-  bov.addEventListener("pointermove", e => { const n = performance.now(); if (n - last < 40) return; last = n; sendWS({ type: "b_mouse", kind: "move", ...bpt(e) }); });
+  // Touch: a drag scrolls the page, a tap is a click. Mouse and pen are forwarded as they are.
+  let touch = null;
+  bov.addEventListener("pointermove", e => {
+    if (touch && e.pointerId === touch.id) {
+      const dy = (touch.y - e.clientY) / B.scale, dx = (touch.x - e.clientX) / B.scale;
+      touch.y = e.clientY; touch.x = e.clientX; touch.moved += Math.abs(dy) + Math.abs(dx);
+      if (touch.moved > 8 / B.scale) sendWS({ type: "b_mouse", kind: "wheel", dx, dy, ...bpt(e) });
+      return;
+    }
+    const n = performance.now(); if (n - last < 40) return; last = n; sendWS({ type: "b_mouse", kind: "move", ...bpt(e) });
+  });
   bov.addEventListener("pointerdown", e => { bov.focus(); bov.setPointerCapture(e.pointerId); e.preventDefault();
+    if (e.pointerType === "touch") { touch = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: 0, pt: bpt(e) }; return; }
     sendWS({ type: "b_mouse", kind: "down", button: ["left", "middle", "right"][e.button] || "left", clicks: e.detail || 1, mods: bmods(e), ...bpt(e) }); });
-  bov.addEventListener("pointerup", e => sendWS({ type: "b_mouse", kind: "up", button: ["left", "middle", "right"][e.button] || "left", clicks: e.detail || 1, mods: bmods(e), ...bpt(e) }));
-  bov.addEventListener("wheel", e => { e.preventDefault(); sendWS({ type: "b_mouse", kind: "wheel", dx: e.deltaX, dy: e.deltaY, ...bpt(e) }); }, { passive: false });
+  bov.addEventListener("pointerup", e => {
+    if (touch && e.pointerId === touch.id) {
+      const t = touch; touch = null;
+      if (t.moved <= 8 / B.scale) { sendWS({ type: "b_mouse", kind: "down", button: "left", clicks: 1, mods: 0, ...t.pt }); sendWS({ type: "b_mouse", kind: "up", button: "left", clicks: 1, mods: 0, ...t.pt }); }
+      return;
+    }
+    sendWS({ type: "b_mouse", kind: "up", button: ["left", "middle", "right"][e.button] || "left", clicks: e.detail || 1, mods: bmods(e), ...bpt(e) });
+  });
+  bov.addEventListener("pointercancel", () => { touch = null; });
+  // deltaMode 1 (lines, Firefox wheel) and 2 (pages) must be converted to pixels, otherwise a notch scrolls 3 px.
+  bov.addEventListener("wheel", e => {
+    e.preventDefault();
+    const k = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? B.vh * .9 : 1;
+    sendWS({ type: "b_mouse", kind: "wheel", dx: e.deltaX * k, dy: e.deltaY * k, ...bpt(e) });
+  }, { passive: false });
   bov.addEventListener("contextmenu", e => e.preventDefault());
   bov.addEventListener("paste", e => { e.preventDefault(); sendWS({ type: "b_text", text: e.clipboardData.getData("text") }); });
   const key = kind => e => {
