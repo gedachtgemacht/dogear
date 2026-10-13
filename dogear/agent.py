@@ -12,13 +12,16 @@ import httpx
 
 from . import browser as br, llm, tools
 from . import present as pres
+from . import checkpoint as cp
 from .brand import NAME
 from .mcp import MCP, MCPError
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 SESSIONS = DATA / "sessions"
 MAX_STEPS = 80
-MODES = ("ask", "edit", "auto")
+MODES = ("ask", "edit", "auto", "plan")
+READONLY_AGENT = ("Read", "LS", "Glob", "Grep", "WebSearch", "WebFetch")
+HELPER_MODEL = "qwen3.5:4b"
 INSTRUCTION_FILES = (f"{NAME.upper()}.md", "KERF.md", "FALZ.md", "CLAUDE.md", "AGENTS.md")
 
 SYSTEM = """You are {name}, a coding agent running locally on the user's machine, inside a terminal-style IDE.
@@ -26,6 +29,7 @@ Working directory: {root}
 Platform: {platform}. Today: {today}.
 
 How you work:
+- Create and change files with Write and Edit; never paste a file's contents into your answer instead of writing it. Use the exact parameter names from the tool descriptions.
 - Explore before you change: LS, Glob, Grep, Read. Never guess what a file contains.
 - Make small changes with Edit. Use Write only for new files or full rewrites.
 - For anything with more than two steps, call TodoWrite first and keep it current. Exactly one item in_progress.
@@ -50,7 +54,7 @@ SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
 def load_skills(text: str, root: Path) -> tuple[str, list[str]]:
     """Skills are markdown files with `triggers:` in their front matter. Matching ones go into the prompt."""
-    out, names = [], []
+    out, names, found = [], [], []
     for f in sorted(SKILLS_DIR.glob("*.md")) + sorted((root / ".dogear" / "skills").glob("*.md")):
         raw = f.read_text()
         m = re.match(r"---\n(.*?)\n---\n(.*)", raw, re.S)
@@ -59,10 +63,23 @@ def load_skills(text: str, root: Path) -> tuple[str, list[str]]:
         meta = dict(l.split(":", 1) for l in m.group(1).splitlines() if ":" in l)
         trig = [t.strip().lower() for t in meta.get("triggers", "").split(",") if t.strip()]
         low = text.lower()
-        if any(re.search(r"(?<![a-zäöü])" + re.escape(t) + r"(?![a-zäöü])", low) for t in trig):
-            out.append(m.group(2).strip())
-            names.append(meta.get("name", f.stem).strip())
+        hits = sum(1 for t in trig if re.search(r"(?<![a-zäöü])" + re.escape(t) + r"(?![a-zäöü])", low))
+        if hits:
+            found.append((hits, m.group(2).strip(), meta.get("name", f.stem).strip()))
+    for _, body, name in sorted(found, key=lambda x: -x[0])[:3]:     # at most three skills per task
+        out.append(body)
+        names.append(name)
     return ("\nSkills for this task (follow them):\n\n" + "\n\n".join(out) + "\n") if out else "", names
+
+
+def list_skills(root: Path) -> list[dict]:
+    out = []
+    for f in sorted(SKILLS_DIR.glob("*.md")) + sorted((root / ".dogear" / "skills").glob("*.md")):
+        m = re.match(r"---\n(.*?)\n---\n(.*)", f.read_text(), re.S)
+        if m:
+            meta = dict(l.split(":", 1) for l in m.group(1).splitlines() if ":" in l)
+            out.append({"name": meta.get("name", f.stem).strip(), "description": meta.get("description", "").strip(), "body": m.group(2).strip()})
+    return out
 
 
 def new_session(root: str) -> dict:
@@ -119,6 +136,43 @@ Original request:
 {task}"""
 
 
+ARG_ALIASES = {"file": "file_path", "filename": "file_path", "filepath": "file_path", "file_name": "file_path", "path": "file_path",
+               "cmd": "command", "script": "command", "code": "content", "contents": "content", "text": "content",
+               "old": "old_string", "new": "new_string", "old_text": "old_string", "new_text": "new_string",
+               "dir": "path", "directory": "path", "folder": "path", "regex": "pattern", "query": "pattern"}
+
+
+def fix_args(name: str, args: dict) -> tuple[dict, str]:
+    """Repair the usual small-model mistakes (wrong parameter names, numbers as strings). Returns (args, error)."""
+    spec = tools.TOOLS[name][2]["function"]["parameters"]
+    props, req = spec.get("properties", {}), spec.get("required", [])
+    out = dict(args)
+    for k in [k for k in out if k not in props]:
+        tgt = ARG_ALIASES.get(k)
+        if tgt in props and tgt not in out:
+            out[tgt] = out.pop(k)
+    unknown = [k for k in out if k not in props]
+    missing = [r for r in req if r not in out]
+    if len(missing) == 1 and len(unknown) == 1:
+        out[missing[0]] = out.pop(unknown[0])
+    for k in [k for k in out if k not in props]:
+        out.pop(k)
+    for k, v in list(out.items()):
+        t = props.get(k, {}).get("type")
+        try:
+            if t == "integer" and isinstance(v, (str, float)):
+                out[k] = int(float(v))
+            elif t == "boolean" and isinstance(v, str):
+                out[k] = v.strip().lower() in ("true", "1", "yes")
+        except ValueError:
+            pass
+    missing = [r for r in req if r not in out]
+    if missing:
+        sig = ", ".join(f"{p}{' (required)' if p in req else ''}" for p in props)
+        return out, f"{name} is missing required parameter(s): {', '.join(missing)}. Parameters of {name}: {sig}. You passed: {', '.join(args) or 'nothing'}."
+    return out, ""
+
+
 def _approx_tokens(msgs) -> int:
     return sum(len(m.get("content") or "") + len(json.dumps(m.get("tool_calls") or "")) for m in msgs) // 3
 
@@ -148,6 +202,8 @@ class Agent:
         self.session: dict | None = None
         self.running = False
         self.mirror = None
+        self.asks: dict[str, asyncio.Future] = {}
+        self._cp: dict = {}
 
     async def sync_mcp(self, root: str):
         try:
@@ -175,6 +231,71 @@ class Agent:
             self.always.add(key)
         if (f := self.pending.get(cid)) and not f.done():
             f.set_result(ok)
+
+    # -- tools that need the agent itself --------------------------------------
+    async def _ask_user(self, cid: str, question: str, options: list[str]) -> str:
+        fut = asyncio.get_running_loop().create_future()
+        self.asks[cid] = fut
+        await self.send({"type": "ask", "id": cid, "question": question, "options": options})
+        try:
+            return await fut
+        finally:
+            self.asks.pop(cid, None)
+
+    def answer_ask(self, cid: str, value: str):
+        if (f := self.asks.get(cid)) and not f.done():
+            f.set_result(value)
+
+    @staticmethod
+    def _skill(name: str, root: Path) -> str:
+        skills = list_skills(root)
+        for k in skills:
+            if k["name"].lower() == name.strip().lower():
+                return k["body"]
+        raise tools.ToolError(f"No skill named {name!r}. Available: {', '.join(k['name'] for k in skills) or 'none'}")
+
+    async def _subagent(self, parent: "tools.Ctx", description: str, prompt: str, fast: bool, model: str, num_ctx: int) -> str:
+        """A fresh-context, read-only agent loop. Returns its final report."""
+        use = HELPER_MODEL if fast else model
+        sub_ctx = tools.Ctx(parent.root, None, None, None)
+        specs = [tools.TOOLS[n][2] for n in READONLY_AGENT]
+        system = ("You are a research sub-agent. Investigate the task using the tools, then reply with a concise, factual report: "
+                  "what you found, with file paths and line numbers or URLs. No preamble. Do not guess; say what you could not find.\n"
+                  f"Working directory: {parent.root}")
+        msgs = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+        cid = parent.call_id
+        for _ in range(14):
+            content, calls = "", []
+            async for kind, p in llm.stream(self.client, use, msgs, specs, False, min(num_ctx, 32768)):
+                if kind == "content":
+                    content += p
+                elif kind == "call":
+                    calls.append(p)
+            msg = {"role": "assistant", "content": content}
+            if calls:
+                msg["tool_calls"] = calls
+            msgs.append(msg)
+            if not calls:
+                return content.strip() or "(the sub-agent returned nothing)"
+            for c in calls:
+                name, args = c["function"]["name"], c["function"].get("arguments") or {}
+                if isinstance(args, str):
+                    args = json.loads(args or "{}")
+                await self.send({"type": "sub", "id": cid, "text": f"{name} {tools.label(name, args)}"[:140]})
+                try:
+                    if name not in READONLY_AGENT:
+                        raise tools.ToolError(f"{name} is not available to sub-agents")
+                    out = tools.TOOLS[name][1](sub_ctx, **args)
+                    out = await out if asyncio.iscoroutine(out) else out
+                except Exception as e:
+                    out = f"Error: {e}"
+                msgs.append({"role": "tool", "tool_name": name, "content": str(out)[:6000]})
+        msgs.append({"role": "user", "content": "Step limit reached. Reply now with your report from what you have."})
+        content = ""
+        async for kind, p in llm.stream(self.client, use, msgs, None, False, 8192):
+            if kind == "content":
+                content += p
+        return content.strip() or "(no report)"
 
     @staticmethod
     def _host(url: str) -> str:
@@ -208,6 +329,9 @@ class Agent:
         s = self.session
         ctx = tools.Ctx(Path(s["root"]), self.send, self.procs, self.browser)
         ctx.todos = s.get("todos", [])
+        ctx.subagent = lambda d, p, f: self._subagent(ctx, d, p, f, model, num_ctx)
+        ctx.skill = lambda n: self._skill(n, ctx.root)
+        ctx.ask_user = lambda q, o: self._ask_user(ctx.call_id, q, o)
         s["messages"].append({"role": "user", "content": text, **({"review": True} if _review else {})})
         if s["title"] == "New session" and not _review:
             s["title"] = text.strip().splitlines()[0][:48]
@@ -227,6 +351,14 @@ class Agent:
             browser_hint = ("\nThe user explicitly wants this done in the browser. Do NOT use WebSearch for it: open the site with "
                             "browser_navigate (for Google: https://www.google.com/search?q=<url-encoded query>), read the page with "
                             "browser_read, and call browser_handoff if a CAPTCHA or bot check appears.\n")
+        index = list_skills(ctx.root)
+        if index:
+            extra += "\nSkills you can load with the Skill tool when the task matches:\n" + "\n".join(
+                f"- {k['name']}: {k['description']}" for k in index) + "\n"
+        if mode == "plan":
+            extra += ("\nPLAN MODE: you may only read and research. Do not change anything. Investigate the code and the request, "
+                      "then answer with a concrete plan: goal, files to change, steps in order, risks, how you will verify. "
+                      "The user will switch the mode to let you carry it out.\n")
         skills, skill_names = load_skills(text, ctx.root)
         if skill_names:
             await self.send({"type": "notice", "text": "Skills: " + ", ".join(skill_names)})
@@ -235,6 +367,12 @@ class Agent:
         recent: list[str] = []
         shot = None
         t0, nsteps, final_idx, probes = time.time(), 0, None, 0
+        consec, abort, nudges, held = 0, False, 0, None
+        if not _review:
+            before = None
+            if mode != "plan":
+                before = await asyncio.to_thread(cp.checkpoint, ctx.root, f"dogear: before: {text.strip()[:90]}")
+            self._cp = {"before": before, "root": str(ctx.root)}
         user_idx = sum(1 for m in s["messages"] if m["role"] == "user" and not m.get("review")) - 1
         info = {"sources": [], "changes": {}, "commands": [], "tools": set()}
         orig_text, cancelled = text, False
@@ -251,7 +389,7 @@ class Agent:
                     msgs.append({"role": "user", "content": "Screenshot of the browser after your last action:", "images": [shot]})
                     shot = None
                 content, calls, done, use_think = "", [], {}, think
-                for attempt in (0, 1):
+                for attempt in range(4):
                     try:
                         async for kind, p in llm.stream(self.client, model, msgs, specs, use_think, num_ctx):
                             if kind == "thinking":
@@ -265,8 +403,15 @@ class Agent:
                                 done = p
                         break
                     except llm.LLMError as e:
-                        if attempt == 0 and use_think and "think" in str(e).lower():
+                        low = str(e).lower()
+                        if attempt == 0 and use_think and "think" in low:
                             use_think = False
+                            continue
+                        if attempt < 3 and any(k in low for k in ("xml syntax", "tool call", "parse")):
+                            # the model emitted a malformed tool call that the server could not parse: ask again
+                            content, calls, done = "", [], {}
+                            msgs = msgs + [{"role": "user", "content": "Your last tool call was malformed and could not be "
+                                            "parsed. Call the tool again with valid arguments."}]
                             continue
                         raise
 
@@ -277,6 +422,54 @@ class Agent:
                 ev = done.get("eval_count", 0)
                 await self.send({"type": "usage", "prompt": done.get("prompt_eval_count", 0), "out": ev,
                                  "tps": round(ev / max(done.get("eval_duration", 1) / 1e9, 0.001), 1), "ctx": num_ctx})
+                if not calls and nudges < 2:
+                    pasted = (not info["tools"] and "```" in content and re.search(
+                        r"\b(create|build|write|make|generate|implement|erstell\w*|bau\w*|schreib\w*|mach\w*)\b.*"
+                        r"(\.\w{1,5}\b|\bfile\b|\bdatei\b|\bscript\b|\bpage\b|\bseite\b)", text, re.I | re.S))
+                    announced = len(content) < 700 and re.match(
+                        r"\s*(i will|i'll|i am going to|i'm going to|let me|now i|next,? i|first,? i|ich werde|ich erstelle|lass mich|ich beginne)\b", content, re.I)
+                    m_file = re.search(r"\b([\w./-]+\.(?:html|py|js|css|json|md|txt|sh|ts))\b", text)
+                    blocks = re.findall(r"```[\w+-]*\n(.*?)```", content, re.S)
+                    if pasted and m_file and len(blocks) == 1:
+                        held = (m_file.group(1), blocks[0])           # remember the code the model produced
+                    refused = (not info["tools"] and len(content) < 1500 and re.search(
+                        r"\b(i cannot|i can't|i'm unable|i am unable|i do not have access|i don't have access|as an ai|ich kann nicht|"
+                        r"ich habe keinen zugriff)\b", content, re.I))
+                    if held and nudges >= 1 and not info["tools"]:
+                        # the nudge did not help: salvage the pasted code into the file the request names
+                        m_file, blocks = type("M", (), {"group": lambda self, i: held[0]})(), [held[1]]
+                        if m_file and len(blocks) == 1:
+                            cid2 = uuid.uuid4().hex[:8]
+                            args2 = {"file_path": m_file.group(1), "content": blocks[0]}
+                            s["messages"].append({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "Write", "arguments": args2}}]})
+                            await self.send({"type": "tool", "id": cid2, "name": "Write", "args": args2, "label": args2["file_path"]})
+                            ctx.call_id, ctx.meta = cid2, {}
+                            result2, ok2 = await self._run_tool(ctx, cid2, "Write", args2, mode)
+                            meta2 = dict(ctx.meta); new2 = meta2.pop("new_text", None)
+                            s["messages"].append({"role": "tool", "tool_name": "Write", "content": result2, "meta": meta2, "ok": ok2})
+                            await self.send({"type": "result", "id": cid2, "ok": ok2, "text": result2[:6000], "meta": meta2})
+                            if ok2:
+                                nsteps += 1; info["tools"].add("Write")
+                                ch = info["changes"].setdefault(args2["file_path"], {"added": 0, "removed": 0, "created": False})
+                                if meta2.get("diff"):
+                                    ch["added"] += meta2["diff"]["added"]; ch["removed"] += meta2["diff"]["removed"]
+                                ch["created"] = ch["created"] or bool(meta2.get("created"))
+                                await self.send({"type": "changed", "path": args2["file_path"], "created": bool(meta2.get("created")),
+                                                 "diff": meta2.get("diff"), "text": new2 if new2 and len(new2) < 200_000 else None})
+                            s["messages"].append({"role": "user", "review": True, "content":
+                                                  "The file was created from your code block. Now verify it works (run it, or open it in the browser) and fix problems."})
+                            save(s)
+                            continue
+                    if pasted or announced or refused:
+                        # small models paste code into the chat, or announce an action and then stop without calling a tool
+                        nudges += 1
+                        s["messages"].append({"role": "user", "review": True, "content":
+                                              ("You pasted code into the chat. Do not do that. Create the file now with the Write tool at the "
+                                               "path from the request, then verify it (run it, or open it in the browser)." if pasted else
+                                               "You DO have tools and full access to the project: Glob, Grep, Read, Write, Edit, Bash. "
+                                               "Use them now to do the task. Do not explain, call a tool." if refused else
+                                               "You described the next step but did not call a tool. Call the tool now, without explaining first.")})
+                        continue
                 if not calls:
                     final_idx = len(s["messages"]) - 1
                     break
@@ -300,6 +493,18 @@ class Agent:
                         result += ("\n[You have run %d diagnostic steps without changing any code. Stop probing. "
                                    "Read the whole function once, trace the failing input through it by hand line by line "
                                    "(especially loop counters, early exits and missing `continue`/`return`), then make one Edit.]" % probes)
+                    window = recent[-10:]
+                    if len(window) >= 6 and len(set(window[-6:])) <= 2:
+                        result += ("\n[You are repeating the same actions without progress. Do not call these tools again. "
+                                   "If the task is done, stop and give your final answer. Otherwise change your approach.]")
+                    if len(window) >= 10 and len(set(window)) <= 2:
+                        abort = True
+                    consec = 0 if ok else consec + 1
+                    if consec == 5:
+                        result += ("\n[The last 5 tool calls all failed. Stop repeating them. Use the exact parameter names from the tool "
+                                   "descriptions; use Read/Write/Edit for files and Bash for commands; the browser is only for http(s) pages.]")
+                    if consec >= 12:
+                        abort = True
                     if recent[-3:].count(sig) == 3:
                         result += "\n[Note: this exact call has now been made three times. Try a different approach or ask the user.]"
                     if ctx.image and await llm.has_vision(self.client, model):
@@ -331,10 +536,16 @@ class Agent:
                     elif name in ("Bash", "KillBash"):
                         await self.send({"type": "fs"})
                     save(s)
+                if abort:
+                    break
             else:
-                # Step budget used up: never end silently. One last answer without tools.
-                await self.send({"type": "notice", "text": f"Step limit ({MAX_STEPS}) reached; summarizing."})
-                wrap = {"role": "user", "content": "Step limit reached. Without calling any tool, give a short final report: "
+                abort = True
+                reason = f"Step limit ({MAX_STEPS}) reached"
+            if abort and final_idx is None:
+                # never end silently: one last answer without tools
+                reason = locals().get("reason") or "Stopped after repeated failing tool calls"
+                await self.send({"type": "notice", "text": f"{reason}; summarizing."})
+                wrap = {"role": "user", "content": f"{reason}. Without calling any tool, give a short final report: "
                         "what is done and verified, what is unfinished or unverified, and your assumptions."}
                 msgs = [{"role": "system", "content": system}] + _wire(s["messages"]) + [wrap]
                 content = ""
@@ -367,6 +578,9 @@ class Agent:
                            "sources": (visited + others)[:8],
                            "changes": [{"path": p, **v} for p, v in info["changes"].items()],
                            "commands": info["commands"][-8:]}
+                if self._cp.get("before") and (info["changes"] or info["commands"]):
+                    after = await asyncio.to_thread(cp.checkpoint, ctx.root, f"dogear: after: {s['title']}")
+                    summary["checkpoint"] = {"before": self._cp["before"], "after": after, "root": self._cp["root"]}
                 s["messages"][final_idx]["summary"] = summary
                 await self.send({"type": "summary", "user_idx": user_idx, **summary})
             save(s)
@@ -391,6 +605,14 @@ class Agent:
                 return f"Unknown MCP tool {name}.", False
         elif name not in tools.TOOLS:
             return f"Unknown tool {name}. Available: {', '.join(tools.TOOLS)}", False
+        if mode == "plan" and (tools.TOOLS.get(name, ("",))[0] in ("write", "shell") or name.startswith("mcp__")
+                               or name in ("browser_click", "browser_type", "browser_key", "browser_eval")):
+            return ("Plan mode is read-only: nothing was changed. Finish your investigation and present the plan as your answer; "
+                    "the user will switch the mode to let you implement it."), False
+        if not mcp_server:
+            args, err = fix_args(name, args)
+            if err:
+                return "Error: " + err, False
         if name == "Bash" and tools.DENY.search(args.get("command", "")):
             return "This command is blocked.", False
         if self._needs_approval(name, args, mode):
@@ -406,6 +628,7 @@ class Agent:
         except (tools.ToolError, MCPError) as e:
             return f"Error: {e}", False
         except TypeError as e:
-            return f"Invalid arguments for {name}: {e}", False
+            props = ", ".join(tools.TOOLS[name][2]["function"]["parameters"].get("properties", {})) if name in tools.TOOLS else ""
+            return f"Invalid arguments for {name}: {e}. Valid parameters: {props}", False
         except Exception as e:
             return f"Error: {type(e).__name__}: {e}", False

@@ -13,6 +13,7 @@ import uvicorn
 
 from . import agent as A
 from . import browser as br
+from . import checkpoint as cpt
 from . import llm, tools
 from .brand import NAME
 
@@ -233,6 +234,16 @@ async def ws(sock: WebSocket):
                 for a in AGENTS:              # the approval may belong to a turn started in another window
                     if m["id"] in a.pending:
                         a.answer(m["id"], bool(m["ok"]), bool(m.get("always")), m.get("key", ""))
+            elif t == "answer":
+                for a in AGENTS:
+                    if m["id"] in a.asks:
+                        a.answer_ask(m["id"], str(m.get("value", "")))
+            elif t == "undo" and not busy():
+                root = Path(m.get("root", ""))
+                if str(root) in (ag.session["root"], cfg["root"]):
+                    touched = await asyncio.to_thread(cpt.restore, root, str(m["to"]))
+                    await send({"type": "undone", "files": touched})
+                    await send({"type": "fs"})
             elif t == "stop" and busy():
                 task.cancel()
             elif t.startswith("b_"):

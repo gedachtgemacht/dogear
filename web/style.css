@@ -317,3 +317,10 @@ dl.defs { margin: 0; display: flex; flex-direction: column; gap: 10px; }
 dl.defs dt { font-weight: 600; color: var(--ink); }
 dl.defs dd { margin: 2px 0 0; color: var(--ink2); line-height: 1.55; padding-left: 12px; border-left: 2px solid var(--line); }
 .answer h3.head strong { font-weight: 650; }
+
+.tc.k-agent .th > i { background: var(--plum); } .tc.k-agent .th b { color: var(--plum); }
+.subline { font: 11.5px var(--mono); color: var(--mute); padding: 1px 0 1px 10px; border-left: 1px solid var(--line); }
+.askrow { margin-top: 8px; } .askrow input { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; outline: none; font: 13px var(--ui); }
+.askrow input:focus { border-color: var(--accent); }
+button.undo { align-self: flex-start; border: 1px solid var(--line); background: none; color: var(--ink2); font: 12px var(--mono); padding: 3px 10px; border-radius: 6px; cursor: pointer; }
+button.undo:hover { border-color: var(--bad); color: var(--bad); }

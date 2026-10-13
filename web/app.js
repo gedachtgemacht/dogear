@@ -76,7 +76,7 @@ const rel = p => (S.root && p.startsWith(S.root + "/")) ? p.slice(S.root.length 
 const q = o => Object.entries(o).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
 const api = (path, o) => fetch(`${path}?${q({ root: S.root, ...o })}`).then(r => r.ok ? r.json() : Promise.reject(r.status));
 const KIND = { browser_navigate: "browser", browser_read: "browser", browser_click: "browser", browser_type: "browser", browser_key: "browser",
-  browser_scroll: "browser", browser_screenshot: "browser", browser_console: "browser", browser_eval: "browser", browser_wait: "browser", browser_resize: "browser", browser_handoff: "browser", WebSearch: "net", Read: "read", LS: "read", Glob: "read", Grep: "read", BashOutput: "read", Write: "write", Edit: "write", Bash: "shell", KillBash: "shell", WebFetch: "net", TodoWrite: "todo" };
+  browser_scroll: "browser", browser_screenshot: "browser", browser_console: "browser", browser_eval: "browser", browser_wait: "browser", browser_resize: "browser", browser_handoff: "browser", WebSearch: "net", Task: "agent", Skill: "read", AskUser: "read", Read: "read", LS: "read", Glob: "read", Grep: "read", BashOutput: "read", Write: "write", Edit: "write", Bash: "shell", KillBash: "shell", WebFetch: "net", TodoWrite: "todo" };
 const sendWS = o => S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify(o));
 
 /* ============================================================ chat */
@@ -113,6 +113,13 @@ function applySummary(t, sm) {
     const h = el("div", "wsum", parts.join(" · "));
     h.onclick = () => { t.work.hidden = !t.work.hidden; h.classList.toggle("open", !t.work.hidden); };
     t.el.insertBefore(h, t.answer); t.sum = h; t.work.hidden = true;
+  }
+  t.after.querySelectorAll(".undo").forEach(n => n.remove());
+  if (sm.checkpoint?.before) {
+    const u = el("button", "undo", "Undo this run"); let armed = false;
+    u.onclick = () => { if (!armed) { armed = true; u.textContent = "Click again to restore the files"; setTimeout(() => { armed = false; u.textContent = "Undo this run"; }, 4000); return; }
+      sendWS({ type: "undo", root: sm.checkpoint.root, to: sm.checkpoint.before }); u.remove(); };
+    t.after.append(u);
   }
   // deterministic context cards: what changed, where it came from
   t.after.querySelectorAll(".changes, .sources").forEach(n => n.remove());
@@ -230,6 +237,16 @@ function finishCard(c, ok, text, meta = {}) {
   if (lines > 2 && !["Write", "Edit", "TodoWrite"].includes(c.name)) c.tr.lastChild.textContent = `+${lines - 1} lines`;
   if (meta.diff && ok) c.tb.append(diffEl(meta.diff)), c.tb.classList.add("show");
   else if (c.name !== "TodoWrite") { c.tb.append(el("pre", "", text.slice(0, 5000))); if (!ok) c.card.classList.add("open"); }
+}
+
+function askBox(m) {
+  const c = S.cards[m.id]; if (!c) return;
+  const box = el("div", "ask"), done = v => { sendWS({ type: "answer", id: m.id, value: v }); box.remove(); };
+  box.append(el("p", "", m.question));
+  const o = el("div", "opts");
+  (m.options || []).forEach((t, i) => { const b = el("button"); b.append(el("kbd", "", String(i + 1)), t); b.onclick = () => done(t); o.append(b); });
+  const row = el("div", "askrow"), inp = el("input"); inp.placeholder = "Or type an answer…"; inp.onkeydown = e => { if (e.key === "Enter" && inp.value.trim()) done(inp.value.trim()); };
+  row.append(inp); box.append(o, row); c.card.classList.add("open"); c.card.append(box); inp.focus();
 }
 
 function approvalBox(m) {
@@ -517,6 +534,9 @@ function handle(m) {
       break;
     }
     case "approval": approvalBox(m); break;
+    case "sub": { const c = S.cards[m.id]; if (c) { c.card.classList.add("open"); c.tb.classList.add("show"); c.tb.append(el("div", "subline", m.text)); } break; }
+    case "ask": askBox(m); break;
+    case "undone": turn().after.append(el("div", "empty", `Restored ${m.files.length} file${m.files.length === 1 ? "" : "s"} to the state before the run.`)); scheduleTree(); break;
     case "result": { const c = S.cards[m.id]; if (c) { finishCard(c, m.ok, m.text, m.meta || {}); if (c.name.startsWith("browser_")) agentBusy(false); } break; }
     case "changed": {
       const p = rel(m.path); S.changed.set(p, m.created ? "A" : (S.changed.get(p) || "M")); S.flash.add(p); setTimeout(() => { S.flash.delete(p); }, 2000);
@@ -590,7 +610,7 @@ function setBusy(b) {
     tick(); spinTimer = setInterval(tick, 500); }
   else { S.cur = null; S.think = null; $("#input").focus(); }
 }
-const MODE_TXT = { ask: "Confirms edits and commands", edit: "Confirms commands", auto: "No confirmations" };
+const MODE_TXT = { ask: "Confirms edits and commands", edit: "Confirms commands", auto: "No confirmations", plan: "Read-only: proposes a plan" };
 function setMode(v) { S.mode = v; document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); $("#h-mode").textContent = MODE_TXT[v]; }
 
 const SLASHES = [
@@ -657,7 +677,7 @@ function connect() {
   document.addEventListener("keydown", e => {
     if (e.key === "Escape" && !$("#drawer").hidden) drawer(false);
     else if (e.key === "Escape" && S.busy && document.activeElement !== bov) sendWS({ type: "stop" });
-    else if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); const m = ["ask", "edit", "auto"]; setMode(m[(m.indexOf(S.mode) + 1) % 3]); }
+    else if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); const m = ["ask", "edit", "auto", "plan"]; setMode(m[(m.indexOf(S.mode) + 1) % 4]); }
     else if (S.ask && "123".includes(e.key) && e.key.length === 1 && !(e.target === inp && inp.value)) { e.preventDefault(); S.ask.answer(e.key !== "3", e.key === "2"); }
   });
   $("#root").onchange = () => { S.root = $("#root").value.trim(); sendWS({ type: "root", root: S.root }); S.changed.clear(); E.files = {}; renderTree(); };
