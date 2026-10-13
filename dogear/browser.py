@@ -147,9 +147,23 @@ READ_JS = r"""
       if (c.nodeType === 3) { const t = clean(c.textContent); if (t.length > 1) emit(`text "${t.slice(0, 160)}"`); }
       else if (c.nodeType === 1) walk(c);
     }
+    if (el.shadowRoot) {                                  // open shadow roots (consent managers, web components)
+      for (const c of el.shadowRoot.childNodes) {
+        if (c.nodeType === 3) { const t = clean(c.textContent); if (t.length > 1) emit(`text "${t.slice(0, 160)}"`); }
+        else if (c.nodeType === 1) walk(c);
+      }
+    }
   }
   walk(document.body || document.documentElement);
-  return { url: location.href, title: document.title, scrollY: Math.round(scrollY), scrollH: document.documentElement.scrollHeight, vw, vh, lines, rects };
+  // A consent dialog that locks the page: scrolling is disabled and the dialog's buttons are what the user must press.
+  const locked = [document.body, document.documentElement].some(e => e && /hidden|clip/.test(getComputedStyle(e).overflowY));
+  const CONSENT = /akzeptier|zustimm|ablehn|einverstanden|nur (technisch|notwendig|erforderlich)|alle erlauben|accept|reject|decline|agree|necessary only|only necessary|essential only|allow all|deny/i;
+  const consent = [];
+  for (const l of lines) {
+    const m = l.match(/^\[(e\d+)\] (?:button|link|a) "([^"]*)"/);
+    if (m && CONSENT.test(m[2])) consent.push({ ref: m[1], label: m[2] });
+  }
+  return { url: location.href, title: document.title, scrollY: Math.round(scrollY), scrollH: document.documentElement.scrollHeight, vw, vh, lines, rects, locked, consent: locked ? consent.slice(0, 6) : [] };
 }
 """
 
@@ -454,6 +468,10 @@ class Browser:
         head = f"Page: {d['title'] or '(untitled)'}\nURL: {d['url']}\nViewport {d['vw']}x{d['vh']}, scrolled {d['scrollY']} of {d['scrollH']}px\n"
         if await self.blocked():
             head += BOT_NOTE + "\n"
+        if d.get("consent"):
+            opts = "; ".join(f'[{c["ref"]}] "{c["label"]}"' for c in d["consent"])
+            head += ("[A cookie/consent dialog is open and locks scrolling. Dismiss it first with browser_click. Prefer the most "
+                     f"restrictive choice (reject or necessary-only) over accepting everything. Options: {opts}]\n")
         return head + "\n".join(d["lines"])
 
     async def locate(self, ref):

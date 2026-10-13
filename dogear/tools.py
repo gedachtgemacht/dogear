@@ -502,9 +502,14 @@ async def browser_key(ctx, key):
 async def browser_scroll(ctx, direction="down", amount=600):
     b = _b(ctx)
     await b.ensure()
+    before = await b.eval("Math.round(scrollY)")
     await b.scroll(int(amount) * (-1 if direction == "up" else 1))
     pos = await b.eval("[Math.round(scrollY), document.documentElement.scrollHeight, innerHeight]")
-    return f"Scrolled {direction}. Position {pos[0]} of {pos[1]}px (viewport {pos[2]}px)"
+    msg = f"Scrolled {direction}. Position {pos[0]} of {pos[1]}px (viewport {pos[2]}px)"
+    if pos[0] == before and pos[1] > pos[2] + 50:
+        msg += ("\n[The page did not move although it is taller than the viewport: a dialog or overlay is probably locking scrolling "
+                "(often a cookie/consent banner). Call browser_read: it lists the dialog's buttons; dismiss it, then scroll again.]")
+    return msg
 
 
 @_wrap
