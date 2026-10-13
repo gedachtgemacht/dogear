@@ -1,6 +1,7 @@
 """HTTP + WebSocket + live preview. Binds to 127.0.0.1 only."""
 import asyncio
 import json
+import os
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -127,6 +128,9 @@ async def profile(model: str, reset: bool = False):
     return {**p.summary(), "tools_loaded": p.tool_names(list(tools.TOOLS)) if p.tools else []}
 
 
+TREE_CAP = 300
+
+
 @app.get("/api/tree")
 async def tree(root: str, path: str = "."):
     ctx = tools.Ctx(Path(root))
@@ -134,8 +138,43 @@ async def tree(root: str, path: str = "."):
         entries = sorted(ctx.path(path).iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
     except (tools.ToolError, OSError) as e:
         raise HTTPException(400, str(e))
-    return [{"name": e.name, "dir": e.is_dir(), "path": ctx.rel(e)}
-            for e in entries if e.name not in tools.SKIP_DIRS and not e.name.startswith(".")]
+    shown = [e for e in entries if e.name not in tools.SKIP_DIRS and not e.name.startswith(".")]
+    out = []
+    for e in shown[:TREE_CAP]:
+        item = {"name": e.name, "dir": e.is_dir(), "path": ctx.rel(e)}
+        if item["dir"]:
+            try:
+                item["count"] = sum(1 for c in e.iterdir() if c.name not in tools.SKIP_DIRS and not c.name.startswith("."))
+            except OSError:
+                item["count"] = 0
+        out.append(item)
+    if len(shown) > TREE_CAP:
+        out.append({"name": "", "more": len(shown) - TREE_CAP})
+    return out
+
+
+@app.get("/api/find")
+async def find(root: str, q: str, limit: int = 40):
+    """File name search for the explorer: every query word must occur in the path (case-insensitive)."""
+    words = [w for w in q.lower().split() if w]
+    if not words:
+        return []
+    base = Path(root).resolve()
+    out, seen = [], 0
+    for dirpath, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in tools.SKIP_DIRS and not d.startswith(".")]
+        for f in files:
+            seen += 1
+            if f.startswith("."):
+                continue
+            rel = str((Path(dirpath) / f).relative_to(base))
+            low = rel.lower()
+            if all(w in low for w in words):
+                out.append(rel)
+        if seen > 20000 or len(out) >= 400:
+            break
+    out.sort(key=lambda r: (not all(w in Path(r).name.lower() for w in words), len(r), r))
+    return [{"name": Path(r).name, "path": r, "dir": False} for r in out[:max(1, min(limit, 100))]]
 
 
 @app.get("/api/file")

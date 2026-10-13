@@ -168,8 +168,11 @@ def listing() -> list[dict]:
     for f in SESSIONS.glob("*.json"):
         try:
             s = json.loads(f.read_text())
+            par = s.get("parent") or {}
             out.append({"id": s["id"], "title": s["title"], "root": s["root"], "updated": s["updated"],
-                        "parent": (s.get("parent") or {}).get("id"), "lineage": lineage_of(s)})
+                        "parent": par.get("id"), "parent_turn": par.get("turn"), "where": par.get("where"),
+                        "worktree": bool(s.get("worktree")), "turns": len(user_positions(s["messages"])),
+                        "lineage": lineage_of(s)})
         except Exception:
             pass
     return sorted(out, key=lambda x: -x["updated"])

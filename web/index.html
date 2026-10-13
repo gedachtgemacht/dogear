@@ -110,12 +110,38 @@
     <aside class="panel plan" id="plan" hidden></aside>
 
     <aside class="panel side drawer" id="drawer" hidden>
-      <div class="side-scroll">
-        <section><h2>Explorer <button class="mini" id="refresh" title="Refresh">↻</button></h2><div class="tree" id="tree"></div></section>
-        <section id="todo-sec" hidden><h2>Tasks <small id="todo-count"></small></h2><ul class="todos" id="todos"></ul></section>
-        <section><h2>Memory <small id="mem-count"></small> <button class="mini" id="mem-add" title="Add a note, snippet or skill">＋</button></h2><div id="memform" hidden></div><div id="memlist"></div></section>
-        <section><h2>MCP <button class="mini" id="mcp-reload" title="Reload servers">↻</button></h2><div id="mcp"></div></section>
-        <section><h2>History <button class="mini" id="new" title="New session">＋</button></h2><ul class="hist" id="hist"></ul></section>
+      <nav class="dtabs" id="dtabs" role="tablist" aria-label="Sidebar">
+        <button data-t="files" role="tab">Files <i id="bd-files"></i></button>
+        <button data-t="sessions" role="tab">Sessions <i id="bd-sessions"></i></button>
+        <button data-t="memory" role="tab">Memory <i id="bd-memory"></i></button>
+        <button data-t="mcp" role="tab">MCP <i id="bd-mcp"></i></button>
+      </nav>
+      <div class="dpane" id="dp-files">
+        <div class="dhead">
+          <div class="proj"><b id="proj-name"></b><span id="proj-path"></span><button class="mini" id="refresh" title="Refresh">↻</button></div>
+          <div class="seg" id="fseg"><button data-v="changed">Changed <i id="fc-ch"></i></button><button data-v="all">All files</button></div>
+          <input class="dq" id="fq" placeholder="Find a file…" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="dlist tree" id="flist"></div>
+      </div>
+      <div class="dpane" id="dp-sessions" hidden>
+        <div class="dhead">
+          <button class="primary" id="new" title="Start a new session">＋ New session</button>
+          <input class="dq" id="sq" placeholder="Search sessions…" autocomplete="off">
+        </div>
+        <div class="dlist" id="slist"></div>
+      </div>
+      <div class="dpane" id="dp-memory" hidden>
+        <div class="dhead">
+          <div class="seg" id="mseg"><button data-v="all">All</button><button data-v="memory">Notes</button><button data-v="snippet">Snippets</button><button data-v="skill">Skills</button></div>
+          <div class="row2"><input class="dq" id="mq" placeholder="Search memory…" autocomplete="off"><button class="mini add" id="mem-add" title="Add a note, snippet or skill">＋</button></div>
+          <div id="memform" hidden></div>
+        </div>
+        <div class="dlist" id="mlist"></div>
+      </div>
+      <div class="dpane" id="dp-mcp" hidden>
+        <div class="dhead"><div class="proj"><b>MCP servers</b><span></span><button class="mini" id="mcp-reload" title="Reload servers">↻</button></div></div>
+        <div class="dlist" id="mcp"></div>
       </div>
     </aside>
   </main>
@@ -132,6 +158,7 @@
     <div class="var-body" id="var-body"></div>
   </div>
 </div>
+<script src="/static/sidebar.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

@@ -345,7 +345,7 @@ function closeWS(user = false) {
   if (user) S.wsDismissed = true;
 }
 const wsOpen = () => !$("#work").hidden;
-function drawer(open) { if (open) setTimeout(loadMemory, 0); $("#drawer").hidden = !open; $("#menu").classList.toggle("on", open); }
+function drawer(open) { $("#drawer").hidden = !open; if (open) renderPane(); $("#menu").classList.toggle("on", open); }
 
 /* ============================================================ editor */
 const E = { files: {}, tabs: ["@preview"], active: "@preview", playing: null, eyeTimer: 0 };
@@ -552,75 +552,12 @@ function termRun() { const n = Object.values(T).filter(t => t.live && t.bg).leng
 /* ============================================================ left column */
 let treeTimer = 0;
 const scheduleTree = () => { clearTimeout(treeTimer); treeTimer = setTimeout(renderTree, 150); };
-async function renderTree() {
-  const box = $("#tree"), fresh = document.createElement("div");
-  await fillTree(fresh, "."); box.replaceChildren(...fresh.childNodes);
-}
-async function fillTree(box, path) {
-  let list; try { list = await api("/api/tree", { path }); } catch { box.append(el("div", "empty", "Cannot read project directory")); return; }
-  if (!list.length && path === ".") { const e = el("div", "empty", "Empty project."); box.append(e); return; }
-  for (const e of list) {
-    const n = el("div", `n ${e.dir ? "dir" : "file"}${S.openDirs.has(e.path) ? " open" : ""}${E.active === e.path ? " sel" : ""}`); n.dataset.p = e.path; n.append(el("span", "", e.name)); n.title = e.path;
-    const b = !e.dir && badge(e.path); if (b) n.append(el("span", `b ${b}`, b));
-    if (S.flash.has(e.path)) n.classList.add("flash");
-    box.append(n);
-    if (e.dir) {
-      n.onclick = () => { S.openDirs.has(e.path) ? S.openDirs.delete(e.path) : S.openDirs.add(e.path); renderTree(); };
-      if (S.openDirs.has(e.path)) { const k = el("div", "kids"); box.append(k); await fillTree(k, e.path); }
-    } else n.onclick = () => { openWS(e.path); drawer(false); };
-  }
-}
-function renderTodos(items) {
-  $("#todo-sec").hidden = !items.length;
-  const ul = $("#todos"); ul.innerHTML = ""; items.forEach(t => ul.append(el("li", t.status, t.content)));
-  $("#todo-count").textContent = `${items.filter(t => t.status === "completed").length}/${items.length}`;
-}
-function renderMcp(servers) {
-  const box = $("#mcp"); box.innerHTML = "";
-  if (!servers.length) { const d = el("div", "mcp-none"); d.innerHTML = "No servers. Add <code>.mcp.json</code> to the project or <code>~/dogear/mcp.json</code>."; box.append(d); return; }
-  for (const s of servers) {
-    const d = el("div", `mcp-s ${s.state}`), h = el("div"); h.innerHTML = `<i></i><b>${esc(s.name)}</b> <span class="meta">${s.state === "ready" ? s.tools.length + " tools" : s.state}</span>`;
-    d.append(h);
-    const sm = el("small", "", s.error || s.tools.join(", ")); sm.hidden = !s.error; d.append(sm);
-    d.onclick = () => sm.hidden = !sm.hidden; box.append(d);
-  }
-}
-function renderHistory(list) {
-  const ul = $("#hist"); ul.innerHTML = "";
-  for (const s of list.slice(0, 25)) {
-    const li = el("li", s.id === S.sid ? "on" : ""); li.append(el("span", "", s.title)); li.title = s.root;
-    const x = el("button", "", "✕"); x.onclick = async e => { e.stopPropagation(); await fetch(`/api/session/${s.id}`, { method: "DELETE" }); refresh(); };
-    li.append(x); li.onclick = () => { if (!S.busy) { sendWS({ type: "open", id: s.id }); drawer(false); } }; ul.append(li);
-  }
-}
-
 /* ============================================================ memory */
 const MEM_LABEL = { memory: "note", snippet: "snippet", skill: "skill" };
 async function memSave(item) {
   const r = await fetch("/api/memory", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...item, session: S.sid }) });
   if (!r.ok) { note("Not saved: " + ((await r.json().catch(() => ({}))).detail || r.status)); return false; }
   loadMemory(); return true;
-}
-async function loadMemory() {
-  try {
-    const r = await fetch("/api/memory?id=" + encodeURIComponent(S.sid || "")); if (!r.ok) return;
-    renderMemory((await r.json()).items);
-  } catch { /* offline */ }
-}
-function renderMemory(items) {
-  const box = $("#memlist"); box.innerHTML = ""; $("#mem-count").textContent = items.length ? String(items.length) : "";
-  if (!items.length) { box.append(el("div", "mcp-none", "Nothing saved yet. The agent saves what later sessions need; you can add notes with ＋ or /remember.")); return; }
-  for (const e of items) {
-    const row = el("div", "mem-i"), head = el("div", "mem-h");
-    head.append(el("span", "mem-k " + e.kind, MEM_LABEL[e.kind]), el("b", "", e.name));
-    if (e.scope === "global") head.append(el("span", "mem-s", "all projects"));
-    const x = el("button", "mini", "✕"); x.title = "Delete";
-    x.onclick = async ev => { ev.stopPropagation(); await fetch(`/api/memory?session=${encodeURIComponent(S.sid || "")}&kind=${e.kind}&name=${encodeURIComponent(e.id)}&scope=${e.scope}`, { method: "DELETE" }); loadMemory(); };
-    head.append(x);
-    const body = el("pre", "mem-b", (e.description && e.kind !== "memory" ? e.description + "\n\n" : "") + e.body); body.hidden = true;
-    head.onclick = () => body.hidden = !body.hidden;
-    row.append(head, body); box.append(row);
-  }
 }
 function memForm() {
   const f = $("#memform"); if (!f.hidden) { f.hidden = true; return; }
@@ -699,7 +636,7 @@ function handle(m) {
     case "term_start": if (m.background) openWS(null, true); termStart(m); break;
     case "term": termWrite(m.id, m.text); break;
     case "term_end": termEnd(m.id, m.code); break;
-    case "todos": renderTodos(m.items); renderRail(m.items); break;
+    case "todos": renderRail(m.items); break;
     case "pins": S.meta.pins = m.pins; S.turns.forEach(syncPin); renderOutline(); break;
     case "titles": if (m.session === S.sid) { S.meta.titles = m.titles; renderOutline(); } break;
     case "forked": renderSession(m.session); S.restore = m.restore; renderBranchBar();
@@ -719,13 +656,13 @@ function handle(m) {
     case "done": if (S.cur && S.turn) S.turn.raw = S.curText; if (S.turns.length >= 4) sendWS({ type: "titles" }); setBusy(false); agentBusy(false); refresh(); if (S.follow && S.webTouched) openWS("@preview", true); S.webTouched = false; break;
     case "session": renderSession(m.session); S.viewOnly = !!m.live;
       if (m.live) { setBusy(true); $("#input").placeholder = "This branch is still running in the background (view only)"; } break;
-    case "runs": S.runs = Object.fromEntries(m.runs.map(r => [r.id, r])); if (m.runs.length && !S.planOpen) planShow(true); renderRail(S.todos); break;
-    case "run_status": S.runs[m.info.id] = { ...(S.runs[m.info.id] || {}), ...m.info }; renderRail(S.todos);
+    case "runs": S.runs = Object.fromEntries(m.runs.map(r => [r.id, r])); if (m.runs.length && !S.planOpen) planShow(true); renderRail(S.todos); sbRuns(); break;
+    case "run_status": S.runs[m.info.id] = { ...(S.runs[m.info.id] || {}), ...m.info }; renderRail(S.todos); sbRuns();
       if (S.viewOnly && m.info.id === S.sid && m.info.status !== "running" && m.info.status !== "waiting") { S.viewOnly = false; setBusy(false); sendWS({ type: "open", id: S.sid }); } break;
     case "run_event": { const prev = S.runs[m.run] || {}; S.runs[m.run] = { ...prev, ...m.info, approval: prev.approval };
       if (m.event.type === "approval") S.runs[m.run].approval = m.event;
       if (m.event.type === "result" || m.event.type === "done") S.runs[m.run].approval = null;
-      if (m.event.type === "tool" || m.event.type === "approval" || m.event.type === "result") renderRail(S.todos); }
+      if (m.event.type === "tool" || m.event.type === "approval" || m.event.type === "result") { renderRail(S.todos); sbRuns(); } }
       if (S.viewOnly && m.run === S.sid) handle(m.event); break;
     case "adopted": adoptCard(m); break;
     case "review_start": if (S.cur) { S.cur.classList.add("narr"); workAdd(S.cur); S.cur = null; S.curText = ""; } turn().after.querySelectorAll(".follow-ups").forEach(n => n.remove()); break;
@@ -738,7 +675,7 @@ function handle(m) {
 }
 
 function renderSession(s) {
-  setTimeout(loadMemory, 0);
+  setTimeout(() => SB.tab === "memory" ? loadMemory() : sbBadges(), 0);
   S.sid = s.id; S.root = s.root; $("#root").value = s.root; S.cards = {}; S.queue = []; S.cur = null; S.changed.clear();
   S.meta = { parent: s.parent || null, pins: s.pins || [], titles: s.titles || {}, lineage: s.lineage || s.id, worktree: s.worktree && !s.worktree.removed ? s.worktree : null }; S.ultra = null;
   $("#term").innerHTML = ""; for (const k in T) delete T[k]; termRun(); $("#term-wrap").hidden = true;
@@ -771,9 +708,9 @@ function renderSession(s) {
         if (ok && m.meta?.diff) S.changed.set(rel(m.meta.path || ""), m.meta.created ? "A" : "M"); }
     }
   }
-  renderTodos(s.todos || []); renderRail(s.todos || []); renderBranchBar(); renderOutline();
+  renderRail(s.todos || []); renderBranchBar(); renderOutline();
   S.turns.forEach(t => { syncPin(t); if (t.raw) offerDiff(t); });
-  E.files = {}; E.tabs = ["@preview"]; activate("@preview"); renderTree();
+  E.files = {}; E.tabs = ["@preview"]; activate("@preview"); renderFiles();
   log.scrollTop = log.scrollHeight; refresh();
   const tab = new URLSearchParams(location.search).get("tab"); if (tab) activate(tab);
 }
@@ -877,25 +814,12 @@ function adoptCard(m) {
 }
 function runsSection() {
   const list = Object.values(S.runs); if (!list.length) return null;
-  const box = el("div", "kruns");
-  for (const r of list) {
-    const c = el("div", `krun ${r.status}`), top = el("div", "rt");
-    top.append(el("span", "dot"), el("span", "rn", r.title)); c.append(top, el("div", "rl", `${r.steps} step${r.steps === 1 ? "" : "s"} · ${r.last || r.status}`));
-    const rb = el("div", "rb"), btn = (txt, fn) => { const b = el("button", "", txt); b.onclick = fn; rb.append(b); };
-    if (r.status === "waiting" && r.approval) {
-      const a = r.approval, what = a.name === "Bash" ? "$ " + (a.args.command || "") : a.name + " " + JSON.stringify(a.args).slice(0, 80);
-      c.append(el("div", "rl", what));
-      btn("Allow", () => { sendWS({ type: "approve", id: a.id, ok: true, always: false, key: a.key || a.name }); r.approval = null; });
-      btn("Always", () => { sendWS({ type: "approve", id: a.id, ok: true, always: true, key: a.key || a.name }); r.approval = null; });
-      btn("Deny", () => { sendWS({ type: "approve", id: a.id, ok: false }); r.approval = null; });
-    }
-    btn("Open", () => !S.busy || S.viewOnly ? sendWS({ type: "open", id: r.id }) : null);
-    if (r.status === "running" || r.status === "waiting") btn("Stop", () => sendWS({ type: "stop_run", id: r.id }));
-    if (r.worktree && r.status !== "running" && r.status !== "waiting") btn("Adopt", () => sendWS({ type: "adopt", id: r.id }));
-    if (r.worktree) btn("Discard", () => sendWS({ type: "discard", id: r.id }));
-    c.append(rb); box.append(c);
-  }
-  return box;
+  const live = list.filter(r => r.status === "running" || r.status === "waiting").length, waiting = list.filter(r => r.status === "waiting").length;
+  const box = el("div", "kruns"), c = el("div", `krun ${live ? "running" : "done"}`), top = el("div", "rt");
+  top.append(el("span", "dot"), el("span", "rn", `${plural(list.length, "parallel run")}`));
+  c.append(top, el("div", "rl", `${live} running${waiting ? ` · ${waiting} need${waiting === 1 ? "s" : ""} approval` : ""} · ${list.length - live} finished`));
+  const rb = el("div", "rb"), b = el("button", "", "Manage in Sessions"); b.onclick = () => { drawer(true); sbTab("sessions"); }; rb.append(b);
+  c.append(rb); box.append(c); return box;
 }
 
 /* ============================================================ outline, pins, branches */
@@ -1063,7 +987,7 @@ function command(text) {
     case "/compact": if (S.busy) note("Wait for the current run to finish."); else { sendWS({ type: "compact", focus: arg }); note("Condensing the conversation…"); } break;
     case "/remember": if (!arg) { note("Usage: /remember <what to keep>"); break; }
       memSave({ kind: "memory", name: arg.split(/\s+/).slice(0, 5).join(" "), content: arg, scope: "project" }).then(ok => ok && note("Saved to project memory.")); break;
-    case "/memory": drawer(true); loadMemory(); break;
+    case "/memory": drawer(true); sbTab("memory"); break;
     case "/init": return "Explore this project (LS, Glob, Read the key files) and write a concise KERF.md in the project root: what it is, how to run, test and build it, the layout, and the conventions a coding agent must follow.";
     default: note("Commands: " + SLASHES.map(s => s[0]).join("  "));
   }
@@ -1108,7 +1032,7 @@ async function refresh() {
     }
     sel.value = c.model; $("#think").checked = c.think; $("#review").checked = c.review !== false; $("#ctx").value = String(c.num_ctx); $("#root").value = S.root = c.root; setMode(c.mode);
   }
-  renderHistory(sessions);
+  renderSessions();
 }
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws`); S.ws = ws;
@@ -1144,7 +1068,7 @@ function connect() {
     else if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); const m = ["ask", "edit", "auto", "plan"]; setMode(m[(m.indexOf(S.mode) + 1) % 4]); }
     else if (S.ask && "123".includes(e.key) && e.key.length === 1 && !(e.target === inp && inp.value)) { e.preventDefault(); S.ask.answer(e.key !== "3", e.key === "2"); }
   });
-  $("#root").onchange = () => { S.root = $("#root").value.trim(); sendWS({ type: "root", root: S.root }); S.changed.clear(); E.files = {}; renderTree(); };
+  $("#root").onchange = () => { S.root = $("#root").value.trim(); sendWS({ type: "root", root: S.root }); S.changed.clear(); E.files = {}; renderFiles(); };
   $("#new").onclick = () => !S.busy && sendWS({ type: "new" });
   $("#refresh").onclick = renderTree; $("#mcp-reload").onclick = () => sendWS({ type: "mcp_reload" }); $("#mem-add").onclick = memForm;
   initBrowser();
@@ -1166,5 +1090,5 @@ function connect() {
     if (!$("#outline").hidden && !e.target.closest("#outline, #outline-btn")) { $("#outline").hidden = true; $("#outline-btn").classList.remove("on"); }
   });
   $("#term-clear").onclick = () => { $("#term").innerHTML = ""; for (const k in T) delete T[k]; termRun(); $("#term-wrap").hidden = true; };
-  await refresh(); emptyState(); renderTabs(); renderTree(); renderMcp([]); connect(); setBusy(false);
+  await refresh(); emptyState(); renderTabs(); sbInit(); renderMcp([]); connect(); setBusy(false);
 })();
