@@ -76,7 +76,7 @@ const rel = p => (S.root && p.startsWith(S.root + "/")) ? p.slice(S.root.length 
 const q = o => Object.entries(o).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
 const api = (path, o) => fetch(`${path}?${q({ root: S.root, ...o })}`).then(r => r.ok ? r.json() : Promise.reject(r.status));
 const KIND = { browser_navigate: "browser", browser_read: "browser", browser_click: "browser", browser_type: "browser", browser_key: "browser",
-  browser_scroll: "browser", browser_screenshot: "browser", browser_console: "browser", browser_eval: "browser", browser_wait: "browser", browser_resize: "browser", browser_handoff: "browser", WebSearch: "net", Task: "agent", Skill: "read", AskUser: "read", Read: "read", LS: "read", Glob: "read", Grep: "read", BashOutput: "read", Write: "write", Edit: "write", Bash: "shell", KillBash: "shell", WebFetch: "net", TodoWrite: "todo" };
+  browser_scroll: "browser", browser_screenshot: "browser", browser_console: "browser", browser_eval: "browser", browser_wait: "browser", browser_resize: "browser", browser_handoff: "browser", WebSearch: "net", Task: "agent", Skill: "read", ViewImage: "read", AskUser: "read", Read: "read", LS: "read", Glob: "read", Grep: "read", BashOutput: "read", Write: "write", Edit: "write", Bash: "shell", KillBash: "shell", WebFetch: "net", TodoWrite: "todo" };
 const sendWS = o => S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify(o));
 
 /* ============================================================ chat */
@@ -88,10 +88,12 @@ function emptyState() {
 const clearEmpty = () => $(".empty-state", log)?.remove();
 
 /* ---- turns: one user message, its work (process) and the answer (focus) */
-function newTurn(text) {
+function newTurn(text, imgs = []) {
   clearEmpty();
   const t = { el: el("div", "turn"), work: el("div", "work"), answer: el("div", "answer"), after: el("div", "after"), sum: null, raw: "", pres: null, code: [] };
-  const u = el("div", "u"), i = el("div", "in"); i.append(el("span", "", text)); u.append(i);
+  const u = el("div", "u"), i = el("div", "in"); i.append(el("span", "", text));
+  if (imgs.length) { const g = el("div", "imgs"); imgs.forEach(src => { const im = el("img"); im.src = src; im.onclick = () => window.open(src, "_blank"); g.append(im); }); i.append(g); }
+  u.append(i);
   t.work.hidden = true; t.el.append(u, t.work, t.answer, t.after); log.append(t.el);
   S.turns.push(t); S.turn = t; return t;
 }
@@ -563,6 +565,9 @@ function handle(m) {
     case "done": if (S.cur && S.turn) S.turn.raw = S.curText; setBusy(false); agentBusy(false); refresh(); if (S.follow && S.webTouched) openWS("@preview", true); S.webTouched = false; break;
     case "session": renderSession(m.session); break;
     case "review_start": if (S.cur) { S.cur.classList.add("narr"); workAdd(S.cur); S.cur = null; S.curText = ""; } turn().after.querySelectorAll(".follow-ups").forEach(n => n.remove()); break;
+    case "compacted": renderSession(m.session);
+      log.append(el("div", "empty", `${m.auto ? "Context was nearly full, so " : ""}${m.replaced} messages were condensed: about ${Math.round(m.before / 1000)}k → ${Math.round(m.after / 1000)}k tokens.`));
+      log.scrollTop = log.scrollHeight; break;
     case "turn_start": if (!S.busy) { renderSession(m.session); setBusy(true); } break;   // a run started in another window
   }
   keep();
@@ -573,7 +578,12 @@ function renderSession(s) {
   $("#term").innerHTML = ""; for (const k in T) delete T[k]; termRun(); $("#term-wrap").hidden = true;
   log.innerHTML = ""; S.turns = []; S.turn = null; if (!s.messages.length) emptyState();
   for (const m of s.messages) {
-    if (m.role === "user") { if (!m.review) newTurn(m.content); }
+    if (m.role === "user") {
+      if (m.compact) {
+        const d = el("details", "compactmark"); d.append(el("summary", "", `Earlier conversation condensed (${m.replaced || "?"} messages)`), el("pre", "", m.content.replace(/^\[[^\]]*\]\n*/, "")));
+        clearEmpty(); log.append(d); S.turn = null;
+      } else if (!m.review) newTurn(m.content, (m.imgs || []).map(n => "/img/" + n));
+    }
     else if (m.role === "assistant") {
       const t = turn(), calls = m.tool_calls || [];
       if (m.content && calls.length) { const n = el("div", "md narr"); n.innerHTML = md(m.content); workAdd(n); }
@@ -614,7 +624,7 @@ const MODE_TXT = { ask: "Confirms edits and commands", edit: "Confirms commands"
 function setMode(v) { S.mode = v; document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); $("#h-mode").textContent = MODE_TXT[v]; }
 
 const SLASHES = [
-  ["/new", "start a new session"], ["/clear", "clear this session"], ["/mode", "ask | edit | auto"], ["/model", "switch model"],
+  ["/new", "start a new session"], ["/compact", "condense the conversation to free context (optional focus)"], ["/clear", "clear this session"], ["/mode", "ask | edit | auto"], ["/model", "switch model"],
   ["/mcp", "reload MCP servers"], ["/init", "write a KERF.md for this project"], ["/help", "list commands"],
 ];
 function slashMenu(v) {
@@ -630,18 +640,36 @@ function command(text) {
     case "/mode": if (["ask", "edit", "auto"].includes(arg)) { setMode(arg); note(`Mode: ${arg}`); } else note("Usage: /mode ask | edit | auto"); break;
     case "/model": { const o = [...$("#model").options].find(o => o.value.includes(arg)); if (o && arg) { $("#model").value = o.value; note(`Model: ${o.value}`); } else note("Models: " + [...$("#model").options].map(o => o.value).join(", ")); break; }
     case "/mcp": sendWS({ type: "mcp_reload" }); note("Reloading MCP servers…"); break;
+    case "/compact": if (S.busy) note("Wait for the current run to finish."); else { sendWS({ type: "compact", focus: arg }); note("Condensing the conversation…"); } break;
     case "/init": return "Explore this project (LS, Glob, Read the key files) and write a concise KERF.md in the project root: what it is, how to run, test and build it, the layout, and the conventions a coding agent must follow.";
     default: note("Commands: " + SLASHES.map(s => s[0]).join("  "));
   }
   return null;
 }
+const ATT = [];
+async function addImage(file) {
+  if (!file || !file.type.startsWith("image/") || ATT.length >= 4) return;
+  try {
+    const bmp = await createImageBitmap(file), k = Math.min(1, 1568 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(bmp.width * k)); c.height = Math.max(1, Math.round(bmp.height * k));
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    const url = c.toDataURL("image/jpeg", 0.88); ATT.push({ b64: url.split(",")[1], url }); renderThumbs();
+  } catch { note("That image could not be read."); }
+}
+function renderThumbs() {
+  const box = $("#thumbs"); box.innerHTML = ""; box.hidden = !ATT.length;
+  ATT.forEach((a, i) => { const t = el("div", "thumb"), im = el("img"); im.src = a.url; const x = el("button", "", "✕"); x.type = "button"; x.onclick = () => { ATT.splice(i, 1); renderThumbs(); }; t.append(im, x); box.append(t); });
+}
+
 function submit(e) {
-  e?.preventDefault(); let t = $("#input").value.trim(); if (!t || S.busy) return;
+  e?.preventDefault(); let t = $("#input").value.trim(); if ((!t && !ATT.length) || S.busy) return;
+  if (!t) t = "Look at the attached image(s) and describe what is relevant for this project.";
   S.wsDismissed = false; if (S.wsAuto && wsOpen()) closeWS();
   S.hist.push(t); S.hi = S.hist.length; $("#input").value = ""; $("#input").style.height = ""; slashMenu("");
   if (t.startsWith("/")) { t = command(t); if (!t) return; }
-  newTurn(t); setBusy(true);
-  sendWS({ type: "user", text: t, model: $("#model").value, think: $("#think").checked, review: $("#review").checked, mode: S.mode, root: $("#root").value.trim(), num_ctx: +$("#ctx").value });
+  const imgs = ATT.splice(0); renderThumbs();
+  newTurn(t, imgs.map(a => a.url)); setBusy(true);
+  sendWS({ type: "user", text: t, images: imgs.map(a => a.b64), model: $("#model").value, think: $("#think").checked, review: $("#review").checked, mode: S.mode, root: $("#root").value.trim(), num_ctx: +$("#ctx").value });
   S.root = $("#root").value.trim(); log.scrollTop = log.scrollHeight;
 }
 
@@ -668,6 +696,16 @@ function connect() {
   $("#theme").onclick = () => { const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = t; store.set("dogear-theme", t); };
   document.querySelectorAll("#mode button").forEach(b => b.onclick = () => setMode(b.dataset.v));
   $("#composer").onsubmit = submit;
+  $("#attach").onclick = () => $("#file").click();
+  $("#file").onchange = async e => { for (const f of e.target.files) await addImage(f); e.target.value = ""; };
+  $("#input").addEventListener("paste", e => {
+    const files = [...(e.clipboardData?.items || [])].filter(i => i.kind === "file" && i.type.startsWith("image/")).map(i => i.getAsFile());
+    if (files.length) { e.preventDefault(); files.forEach(addImage); }
+  });
+  const chat = $(".chat");
+  ["dragenter", "dragover"].forEach(ev => chat.addEventListener(ev, e => { if ([...(e.dataTransfer?.types || [])].includes("Files")) { e.preventDefault(); chat.classList.add("drop"); } }));
+  ["dragleave", "drop"].forEach(ev => chat.addEventListener(ev, e => { if (ev === "dragleave" && chat.contains(e.relatedTarget)) return; chat.classList.remove("drop"); }));
+  chat.addEventListener("drop", e => { e.preventDefault(); [...e.dataTransfer.files].forEach(addImage); });
   const inp = $("#input");
   inp.oninput = () => { inp.style.height = "auto"; inp.style.height = Math.min(inp.scrollHeight, innerHeight * .38) + "px"; slashMenu(inp.value); };
   inp.onkeydown = e => {

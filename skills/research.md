@@ -1,7 +1,7 @@
 ---
 name: research
 description: Method for looking things up on the web and reporting findings you can trust
-triggers: research, look up, find out, recherche, recherchiere, suche nach, search for, compare, vergleiche, what is, was ist
+triggers: research, look up, find out, recherche, recherchiere, suche nach, search for, compare, vergleiche
 ---
 # Research
 

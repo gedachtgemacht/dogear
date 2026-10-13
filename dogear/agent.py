@@ -1,5 +1,7 @@
 """The agent loop: model → tool calls → permission → results → model."""
 import asyncio
+import base64
+import hashlib
 import json
 import platform
 import re
@@ -18,6 +20,8 @@ from .mcp import MCP, MCPError
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 SESSIONS = DATA / "sessions"
+IMAGES = DATA / "images"
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_STEPS = 80
 MODES = ("ask", "edit", "auto", "plan")
 READONLY_AGENT = ("Read", "LS", "Glob", "Grep", "WebSearch", "WebFetch")
@@ -185,9 +189,64 @@ def _trim(msgs: list[dict], budget: int):
         msgs[i] = {**msgs[i], "content": "[old result truncated]"}
 
 
+def save_image(b64: str) -> str:
+    """Store an attached image on disk, return its file name."""
+    raw = base64.b64decode(b64, validate=False)
+    if not raw or len(raw) > MAX_IMAGE_BYTES:
+        raise ValueError("image missing or larger than 10 MB")
+    IMAGES.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha1(raw).hexdigest()[:16] + ".jpg"
+    (IMAGES / name).write_bytes(raw)
+    return name
+
+
 def _wire(msgs: list[dict]) -> list[dict]:
+    """Messages as the model sees them. Only the two most recent messages with images carry the pixels."""
     keep = ("role", "content", "tool_calls", "tool_name")
-    return [{k: v for k, v in m.items() if k in keep} for m in msgs]
+    recent = set([i for i, m in enumerate(msgs) if m.get("imgs")][-2:])
+    out = []
+    for i, m in enumerate(msgs):
+        w = {k: v for k, v in m.items() if k in keep}
+        if m.get("imgs"):
+            files = [IMAGES / Path(n).name for n in m["imgs"]]
+            if i in recent:
+                w["images"] = [base64.b64encode(f.read_bytes()).decode() for f in files if f.exists()]
+            else:
+                w["content"] = (w.get("content") or "") + f"\n[{len(files)} image(s) were attached here earlier]"
+        out.append(w)
+    return out
+
+
+COMPACT_PROMPT = """You compress a working session between a user and a coding agent so the work can continue with a fresh, small context.
+Write a faithful briefing that the agent will rely on from now on. Keep exact identifiers: file paths, names, numbers, ports, commands, URLs.
+Sections (omit empty ones):
+Goal: what the user wants overall.
+Decisions and assumptions: choices made and why, including the user's stated preferences.
+Files: path - what it is, what was created or changed.
+Commands and results: what was run and what came out (tests passed/failed, errors).
+Current state: what works, what is half done.
+Open problems and next steps.
+Facts to remember: anything the user told you that is not in the files.
+No preamble, no opinions, no filler. At most about 600 words."""
+
+
+def _transcript(msgs: list[dict], limit: int = 30000) -> str:
+    lines = []
+    for m in msgs:
+        r = m["role"]
+        if r == "user":
+            lines.append("USER: " + (m.get("content") or "")[:1800] + (f" [+{len(m['imgs'])} image(s)]" if m.get("imgs") else ""))
+        elif r == "assistant":
+            if m.get("content"):
+                lines.append("ASSISTANT: " + m["content"][:1400])
+            for c in m.get("tool_calls", []):
+                lines.append(f"TOOL CALL: {c['function']['name']} {json.dumps(c['function'].get('arguments'), ensure_ascii=False)[:220]}")
+        elif r == "tool":
+            lines.append(f"TOOL RESULT ({m.get('tool_name')}): " + (m.get("content") or "")[:320])
+    t = "\n".join(lines)
+    if len(t) > limit:
+        t = t[: limit // 2] + "\n[... middle of the session omitted ...]\n" + t[-limit // 2:]
+    return t
 
 
 class Agent:
@@ -324,15 +383,51 @@ class Agent:
             return mode == "ask"
         return False
 
+    # -- context compaction ------------------------------------------------------
+    async def compact(self, model: str, num_ctx: int, focus: str = "") -> dict:
+        s = self.session
+        msgs = s["messages"]
+        if len(msgs) < 3:
+            raise ValueError("Nothing to compact yet.")
+        before = _approx_tokens(_wire(msgs))
+        system = COMPACT_PROMPT + (f"\nThe user asks you to focus on: {focus}" if focus.strip() else "")
+        body = [{"role": "system", "content": system},
+                {"role": "user", "content": "Session transcript:\n\n" + _transcript(msgs)}]
+        text = ""
+        async for kind, p in llm.stream(self.client, model, body, None, False, min(num_ctx, 32768)):
+            if kind == "content":
+                text += p
+        if len(text.strip()) < 40:
+            raise ValueError("The summary came back empty; nothing was changed.")
+        s["messages"] = [{"role": "user", "compact": True, "replaced": len(msgs),
+                          "content": "[Summary of the earlier conversation. Treat it as ground truth about what was done and decided.]\n\n" + text.strip()}]
+        save(s)
+        return {"before": before, "after": _approx_tokens(_wire(s["messages"])), "replaced": len(msgs)}
+
     # -- one user turn ---------------------------------------------------------
-    async def turn(self, text: str, model: str, think: bool, mode: str, num_ctx: int, review_on: bool = False, _review: bool = False):
+    async def turn(self, text: str, model: str, think: bool, mode: str, num_ctx: int, review_on: bool = False, _review: bool = False, images: list | None = None):
         s = self.session
         ctx = tools.Ctx(Path(s["root"]), self.send, self.procs, self.browser)
         ctx.todos = s.get("todos", [])
+        if not _review and _approx_tokens(_wire(s["messages"])) > int(num_ctx * 0.7):
+            try:
+                r = await self.compact(model, num_ctx)
+                await self.send({"type": "compacted", "session": s, "auto": True, **r})
+            except Exception as e:
+                await self.send({"type": "notice", "text": f"Could not compact automatically: {e}"})
         ctx.subagent = lambda d, p, f: self._subagent(ctx, d, p, f, model, num_ctx)
         ctx.skill = lambda n: self._skill(n, ctx.root)
         ctx.ask_user = lambda q, o: self._ask_user(ctx.call_id, q, o)
-        s["messages"].append({"role": "user", "content": text, **({"review": True} if _review else {})})
+        names = []
+        for b in (images or [])[:4]:
+            try:
+                names.append(save_image(b))
+            except Exception as e:
+                await self.send({"type": "notice", "text": f"Image skipped: {e}"})
+        if names and not await llm.has_vision(self.client, model):
+            await self.send({"type": "notice", "text": f"{model} cannot see images; they are ignored for this run. Pick a vision model."})
+            names = []
+        s["messages"].append({"role": "user", "content": text, **({"imgs": names} if names else {}), **({"review": True} if _review else {})})
         if s["title"] == "New session" and not _review:
             s["title"] = text.strip().splitlines()[0][:48]
         save(s)
@@ -373,7 +468,7 @@ class Agent:
             if mode != "plan":
                 before = await asyncio.to_thread(cp.checkpoint, ctx.root, f"dogear: before: {text.strip()[:90]}")
             self._cp = {"before": before, "root": str(ctx.root)}
-        user_idx = sum(1 for m in s["messages"] if m["role"] == "user" and not m.get("review")) - 1
+        user_idx = sum(1 for m in s["messages"] if m["role"] == "user" and not m.get("review") and not m.get("compact")) - 1
         info = {"sources": [], "changes": {}, "commands": [], "tools": set()}
         orig_text, cancelled = text, False
         if _review and getattr(self, "_carry", None):

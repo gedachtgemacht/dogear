@@ -49,7 +49,14 @@
       <div class="spin" id="spin" hidden><i></i><span id="spin-t"></span></div>
       <div class="slash" id="slash" hidden></div>
       <form id="composer">
-        <textarea id="input" rows="1" placeholder="Describe a task, or type / for commands" autofocus></textarea>
+        <div class="thumbs" id="thumbs" hidden></div>
+        <div class="crow">
+          <button type="button" class="attach" id="attach" title="Attach images (or paste / drop them here)" aria-label="Attach images">
+            <svg viewBox="0 0 16 16" width="16" height="16"><path d="M13.5 7.5l-5.2 5.2a3 3 0 0 1-4.3-4.2l5.5-5.5a2 2 0 0 1 2.9 2.8L7 11.3a1 1 0 0 1-1.4-1.4l4.7-4.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+          <textarea id="input" rows="1" placeholder="Describe a task, or type / for commands" autofocus></textarea>
+        </div>
+        <input type="file" id="file" accept="image/*" multiple hidden>
       </form>
       <div class="hint"><span id="h-mode"></span><span>⇧⇥ mode</span><span>esc stop</span><span>↵ send</span></div>
     </section>

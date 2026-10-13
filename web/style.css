@@ -324,3 +324,21 @@ dl.defs dd { margin: 2px 0 0; color: var(--ink2); line-height: 1.55; padding-lef
 .askrow input:focus { border-color: var(--accent); }
 button.undo { align-self: flex-start; border: 1px solid var(--line); background: none; color: var(--ink2); font: 12px var(--mono); padding: 3px 10px; border-radius: 6px; cursor: pointer; }
 button.undo:hover { border-color: var(--bad); color: var(--bad); }
+
+/* ---- attachments and compaction */
+#composer { display: flex; flex-direction: column; gap: 8px; }
+.crow { display: flex; align-items: flex-start; gap: 8px; }
+.attach { flex: none; border: 0; background: none; color: var(--mute); cursor: pointer; padding: 4px; border-radius: 6px; margin-top: 1px; }
+.attach:hover { color: var(--ink); background: var(--panel3); }
+.thumbs { display: flex; gap: 8px; flex-wrap: wrap; }
+.thumb { position: relative; width: 64px; height: 64px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: var(--code); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb button { position: absolute; right: 2px; top: 2px; width: 18px; height: 18px; border: 0; border-radius: 50%; background: rgba(0,0,0,.65); color: #fff; font-size: 10px; cursor: pointer; line-height: 18px; padding: 0; }
+.chat.drop::after { content: "Drop images to attach"; position: absolute; inset: 8px; border: 2px dashed var(--accent); border-radius: 12px; display: grid; place-items: center; background: color-mix(in srgb, var(--panel) 80%, transparent); color: var(--accent); font-weight: 600; pointer-events: none; }
+.chat { position: relative; }
+.u .imgs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.u .imgs img { max-height: 140px; max-width: 220px; border-radius: 8px; border: 1px solid var(--line); cursor: zoom-in; display: block; }
+.u .in { flex-direction: column; }
+.compactmark { margin: 4px 0 18px; border: 1px dashed var(--line); border-radius: 8px; padding: 8px 12px; color: var(--mute); font-size: 12.5px; }
+.compactmark summary { cursor: pointer; }
+.compactmark pre { white-space: pre-wrap; font: 12px/1.55 var(--mono); color: var(--ink2); margin: 8px 0 0; max-height: 300px; overflow: auto; }

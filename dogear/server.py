@@ -114,6 +114,15 @@ async def file(root: str, path: str):
     return {"text": raw[:300_000].decode("utf-8", "replace"), "truncated": len(raw) > 300_000}
 
 
+@app.get("/img/{name}")
+async def image(name: str):
+    import re as _re
+    f = A.IMAGES / name
+    if not _re.fullmatch(r"[0-9a-f]{16}\.jpg", name) or not f.is_file():
+        raise HTTPException(404)
+    return FileResponse(f, headers={"Cache-Control": "max-age=31536000", "X-Content-Type-Options": "nosniff"})
+
+
 @app.get("/api/session/{sid}")
 async def get_session(sid: str):
     s = A.load(sid)
@@ -229,7 +238,8 @@ async def ws(sock: WebSocket):
                     continue
                 ag.session["root"] = preview_root["path"] = cfg["root"]
                 task = asyncio.create_task(
-                    ag.turn(m["text"], cfg["model"], bool(cfg["think"]), cfg["mode"], cfg["num_ctx"], bool(cfg.get("review", True))))
+                    ag.turn(m["text"], cfg["model"], bool(cfg["think"]), cfg["mode"], cfg["num_ctx"],
+                            bool(cfg.get("review", True)), False, [i for i in m.get("images", []) if isinstance(i, str)][:4]))
             elif t == "approve":
                 for a in AGENTS:              # the approval may belong to a turn started in another window
                     if m["id"] in a.pending:
@@ -244,6 +254,12 @@ async def ws(sock: WebSocket):
                     touched = await asyncio.to_thread(cpt.restore, root, str(m["to"]))
                     await send({"type": "undone", "files": touched})
                     await send({"type": "fs"})
+            elif t == "compact" and not busy():
+                try:
+                    r = await ag.compact(cfg["model"], cfg["num_ctx"], str(m.get("focus", "")))
+                    await send({"type": "compacted", "session": ag.session, "auto": False, **r})
+                except Exception as e:
+                    await send({"type": "notice", "text": f"Compact failed: {e}"})
             elif t == "stop" and busy():
                 task.cancel()
             elif t.startswith("b_"):
