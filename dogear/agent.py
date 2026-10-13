@@ -407,7 +407,7 @@ class Agent:
                         if attempt == 0 and use_think and "think" in low:
                             use_think = False
                             continue
-                        if attempt < 3 and any(k in low for k in ("xml syntax", "tool call", "parse")):
+                        if attempt < 3 and any(k in low for k in ("xml syntax", "tool call", "parse", "stalled")):
                             # the model emitted a malformed tool call that the server could not parse: ask again
                             content, calls, done = "", [], {}
                             msgs = msgs + [{"role": "user", "content": "Your last tool call was malformed and could not be "

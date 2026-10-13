@@ -1,9 +1,11 @@
 """Streaming-Client für den lokalen Ollama-Server."""
+import asyncio
 import json
 
 import httpx
 
 URL = "http://127.0.0.1:11434"
+STALL_SECONDS = 150   # a stream that goes silent this long is considered dead (first token of a big prompt included)
 
 
 class LLMError(Exception):
@@ -31,7 +33,14 @@ async def stream(client, model, messages, tools, think, num_ctx):
     async with client.stream("POST", f"{URL}/api/chat", json=body, timeout=None) as r:
         if r.status_code != 200:
             raise LLMError((await r.aread()).decode()[:500])
-        async for line in r.aiter_lines():
+        it = r.aiter_lines().__aiter__()
+        while True:
+            try:
+                line = await asyncio.wait_for(it.__anext__(), STALL_SECONDS)
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                raise LLMError(f"model stalled: no output for {STALL_SECONDS} s")
             if not line:
                 continue
             d = json.loads(line)
