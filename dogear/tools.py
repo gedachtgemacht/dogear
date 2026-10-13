@@ -446,12 +446,36 @@ async def browser_navigate(ctx, url):
     since = b.errors_seen
     await b.navigate(url)
     note = ("\n" + BOT_NOTE) if await b.blocked() else ""
+    note += await _consent_note(ctx, b)
     return f"Navigated to {b.url}\nTitle: {b.title or '(none)'}" + note + _console_note(b, since)
+
+
+async def _consent_note(ctx, b) -> str:
+    """After a page load: wait for a cookie dialog, dismiss it with the most restrictive choice, or show it to the model."""
+    try:
+        d = await b.overlay_state()
+        if not (d.get("locked") or d.get("consent")):
+            return ""
+        label = await b.dismiss_consent(d)
+        if label:
+            if ctx.emit:
+                await ctx.emit({"type": "notice", "text": f"Cookie dialog dismissed: \u201c{label}\u201d"})
+            return f'\n[A cookie dialog was open; dismissed it by choosing "{label}", the most restrictive option.]'
+        ctx.image = await b.screenshot()          # let a vision model see what blocks the page
+        opts = "; ".join(f'[{c["ref"]}] "{c["label"]}"' for c in d.get("consent") or [])
+        return ("\n[An overlay or dialog locks this page" + (f" (options after browser_read: {opts})" if opts else "") +
+                ". Look at the screenshot, call browser_read and dismiss it with the most restrictive choice before you continue.]")
+    except Exception:
+        return ""
 
 
 @_wrap
 async def browser_read(ctx, all=False):
-    return _clip(await _b(ctx).read(all), 9000)
+    b = _b(ctx)
+    out = await b.read(all)
+    if b.overlay_locked:
+        ctx.image = await b.screenshot()
+    return _clip(out, 9000)
 
 
 @_wrap

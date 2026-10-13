@@ -121,8 +121,10 @@ READ_JS = r"""
   const inView = r => r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
   const label = el => clean(el.getAttribute("aria-label")) || clean(el.innerText) || clean(el.value) || clean(el.placeholder) || clean(el.title) || clean(el.alt) || clean(el.name);
   const emit = s => { if (lines.length < 500) lines.push(s); };
+  const seen = new Set();
   function walk(el) {
-    if (lines.length >= 500 || SKIP.has(el.tagName.toUpperCase())) return;
+    if (lines.length >= 500 || SKIP.has(el.tagName.toUpperCase()) || seen.has(el)) return;
+    seen.add(el);
     const cs = getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden") return;
     const r = el.getBoundingClientRect(), tag = el.tagName.toLowerCase();
@@ -154,6 +156,8 @@ READ_JS = r"""
       }
     }
   }
+  // dialogs and consent managers first: they sit at the end of the document and would be cut off by the line cap
+  for (const p of document.querySelectorAll('#usercentrics-root,#onetrust-consent-sdk,#onetrust-banner-sdk,#CybotCookiebotDialog,#cmpbox,[role=dialog],[aria-modal=true],[id*="consent" i],[id*="cookie" i]')) walk(p);
   walk(document.body || document.documentElement);
   // A consent dialog that locks the page: scrolling is disabled and the dialog's buttons are what the user must press.
   const locked = [document.body, document.documentElement].some(e => e && /hidden|clip/.test(getComputedStyle(e).overflowY));
@@ -179,6 +183,13 @@ REF_JS = r"""
 """
 
 
+RESTRICTIVE = re.compile(r"nur (technisch|notwendig|erforderlich|essenziell)|ablehn|reject|decline|\bdeny\b|necessary only|only necessary|essential only", re.I)
+CONSENT_PENDING_JS = ("!!document.querySelector('#usercentrics-root,#onetrust-consent-sdk,#onetrust-banner-sdk,#CybotCookiebotDialog,#cmpbox,"
+                      "[id*=\"cookie\" i],[class*=\"cookie\" i],[id*=\"consent\" i],[class*=\"consent\" i],[aria-modal=true]')")
+
+CMP_SCRIPT_JS = ("!!document.querySelector('script[src*=\"usercentrics\"],script[src*=\"onetrust\"],script[src*=\"cookiebot\"],"
+                 "script[src*=\"cookielaw\"],script[src*=\"consentmanager\"],script[src*=\"sourcepoint\"],script[src*=\"didomi\"]')")
+
 BOT_NOTE = ("[This page looks like a CAPTCHA or bot check. Do not try to solve or bypass it. "
             "Call browser_handoff so the user can complete it, then continue.]")
 
@@ -202,6 +213,8 @@ class Browser:
         self.state = "stopped"
         self.errors_seen = 0
         self.handoff: asyncio.Future | None = None
+        self.overlay_locked = False
+        self.cmp_hosts: set[str] = set()
         self.owner, self.owner_ts = "", 0.0      # which branch run currently drives the shared browser
 
     # ------------------------------------------------------------ lifecycle
@@ -463,16 +476,56 @@ class Browser:
                 await self.settle(4)
         except Exception:
             pass
-        d = await self.eval(f"({READ_JS})({json.dumps(bool(all_))})")
+        d = await self.overlay_state(all_)
+        dismissed = ""
+        if d.get("consent"):
+            dismissed = await self.dismiss_consent(d)
+            if dismissed:
+                d = await self.overlay_state(all_)
         await self._broadcast({"type": "b_marks", "rects": d["rects"], "vw": d["vw"], "vh": d["vh"]})
         head = f"Page: {d['title'] or '(untitled)'}\nURL: {d['url']}\nViewport {d['vw']}x{d['vh']}, scrolled {d['scrollY']} of {d['scrollH']}px\n"
         if await self.blocked():
             head += BOT_NOTE + "\n"
+        self.overlay_locked = bool(d.get("locked"))
+        if dismissed:
+            head += f'[A cookie dialog was open; dismissed it by choosing "{dismissed}", the most restrictive option.]\n'
         if d.get("consent"):
             opts = "; ".join(f'[{c["ref"]}] "{c["label"]}"' for c in d["consent"])
             head += ("[A cookie/consent dialog is open and locks scrolling. Dismiss it first with browser_click. Prefer the most "
                      f"restrictive choice (reject or necessary-only) over accepting everything. Options: {opts}]\n")
         return head + "\n".join(d["lines"])
+
+    async def overlay_state(self, all_=False):
+        """READ_JS result. Consent managers appear a moment after load, so wait briefly while one is present but not yet shown."""
+        d = await self.eval(f"({READ_JS})({json.dumps(bool(all_))})")
+        host = urlparse(d.get("url", "")).netloc
+        for _ in range(7):
+            if d.get("consent"):
+                break
+            pending = await self.eval(CONSENT_PENDING_JS)
+            if not pending and host not in self.cmp_hosts:       # a consent-manager script is loaded but has not drawn yet
+                pending = await self.eval(CMP_SCRIPT_JS)
+            if not pending:
+                break
+            await asyncio.sleep(0.6)
+            d = await self.eval(f"({READ_JS})({json.dumps(bool(all_))})")
+        self.cmp_hosts.add(host)
+        return d
+
+    async def dismiss_consent(self, d=None):
+        """Click a restrictive consent option (reject / necessary only) when the page offers one. Never 'accept all'.
+        Returns the label that was clicked, or ''."""
+        d = d or await self.overlay_state()
+        for c in d.get("consent") or []:
+            if RESTRICTIVE.search(c["label"]):
+                try:
+                    r = await self.locate(c["ref"])
+                    await self.click(r["x"], r["y"], False, c["label"])
+                    await asyncio.sleep(0.9)
+                    return c["label"]
+                except BrowserError:
+                    return ""
+        return ""
 
     async def locate(self, ref):
         r = await self.eval(f"({REF_JS})({json.dumps(ref)})")
