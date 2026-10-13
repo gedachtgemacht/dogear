@@ -11,20 +11,20 @@ def show(name, params, caps=("completion", "tools"), experts=None, used=None, ct
     return {"model_info": mi, "details": {"family": "x", "parameter_size": size or "", "quantization_level": "Q4_K_M"}, "capabilities": list(caps)}
 
 CASES = [  # name, payload, expected tier/toolbox/prompt
-    ("tiny:1b", show("tiny:1b", 1.2e9), ("small", "lean", "lean")),
-    ("phi:3.8b", show("phi", 3.8e9), ("small", "lean", "lean")),
-    ("qwen3.5:4b", show("q", 4.66e9, ("completion", "vision", "tools", "thinking")), ("small", "lean", "lean")),
-    ("llama:8b", show("l", 8.0e9), ("small", "lean", "lean")),
+    ("tiny:1b", show("tiny:1b", 1.2e9), ("small", "standard", "lean")),
+    ("phi:3.8b", show("phi", 3.8e9), ("small", "standard", "lean")),
+    ("qwen3.5:4b", show("q", 4.66e9, ("completion", "vision", "tools", "thinking")), ("small", "standard", "lean")),
+    ("llama:8b", show("l", 8.0e9), ("small", "standard", "lean")),
     ("mid:14b", show("m", 14.8e9), ("medium", "standard", "full")),
     ("dense:27b", show("d", 27.3e9), ("medium", "full", "full")),
     ("dense:32b", show("d", 32.8e9), ("medium", "full", "full")),
     ("big:70b", show("b", 70.6e9), ("large", "full", "full")),
     ("moe:30b-a3b", show("m", 30.5e9, experts=128, used=8), ("medium", "full", "full")),
     ("moe:35b-a3b", show("m", 35.5e9, experts=256, used=8), ("medium", "full", "full")),
-    ("moe:8b-a1b", show("m", 8.3e9, experts=64, used=4), ("small", "lean", "lean")),
+    ("moe:8b-a1b", show("m", 8.3e9, experts=64, used=4), ("small", "standard", "lean")),
     ("huge:480b-a35b", show("h", 480e9, experts=160, used=8), ("large", "full", "full")),
     ("weird:latest", {"model_info": {}, "details": {}, "capabilities": ["completion", "tools"]}, ("medium", "standard", "full")),  # unknown size
-    ("sized-by-name:7b", {"model_info": {}, "details": {"parameter_size": "7B"}, "capabilities": ["tools"]}, ("small", "lean", "lean")),
+    ("sized-by-name:7b", {"model_info": {}, "details": {"parameter_size": "7B"}, "capabilities": ["tools"]}, ("small", "standard", "lean")),
 ]
 ok = bad = 0
 for name, payload, want in CASES:

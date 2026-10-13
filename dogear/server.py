@@ -132,6 +132,21 @@ async def image(name: str):
     return FileResponse(f, headers={"Cache-Control": "max-age=31536000", "X-Content-Type-Options": "nosniff"})
 
 
+@app.get("/api/branches")
+async def branches(id: str):
+    base = A.load(id)
+    if not base:
+        raise HTTPException(404)
+    lin = A.lineage_of(base)
+    out = []
+    for item in A.listing():
+        if item["lineage"] == lin or item["id"] == lin:
+            s = A.load(item["id"])
+            out.append({"id": item["id"], "title": item["title"], "updated": item["updated"], "parent": item["parent"],
+                        "turns": len(A.user_positions(s["messages"])) if s else 0})
+    return out
+
+
 @app.get("/api/session/{sid}")
 async def get_session(sid: str):
     s = A.load(sid)
@@ -221,6 +236,11 @@ async def ws(sock: WebSocket):
             await send({"type": "b_status", "state": "error", "error": str(e)})
 
     wtask = asyncio.create_task(writer())
+    async def _titles(agent, send_):
+        s = agent.session
+        titles = await agent.make_titles(s)
+        await send_({"type": "titles", "titles": titles, "session": s["id"]})
+
     ag = A.Agent(send, client, BROWSER)
     ag.mirror = mirror
     MIRROR[id(direct)] = direct
@@ -263,6 +283,32 @@ async def ws(sock: WebSocket):
                     touched = await asyncio.to_thread(cpt.restore, root, str(m["to"]))
                     await send({"type": "undone", "files": touched})
                     await send({"type": "fs"})
+            elif t == "fork" and not busy():
+                try:
+                    new, restore = A.fork_session(ag.session, int(m.get("turn", 0)), "before" if m.get("where") == "before" else "after")
+                    A.save(new)
+                    ag.session = new
+                    prefill = ""
+                    if m.get("where") == "before":
+                        pos = A.user_positions(A.load(new["parent"]["id"])["messages"])
+                        prefill = A.load(new["parent"]["id"])["messages"][pos[new["parent"]["turn"]]]["content"]
+                    await send({"type": "forked", "session": new, "restore": restore, "prefill": prefill})
+                except Exception as e:
+                    await send({"type": "notice", "text": f"Cannot branch: {e}"})
+            elif t == "pin":
+                pins = set(ag.session.get("pins", []))
+                (pins.add if m.get("on") else pins.discard)(int(m["turn"]))
+                ag.session["pins"] = sorted(pins)
+                A.save(ag.session)
+                await send({"type": "pins", "pins": ag.session["pins"]})
+            elif t == "titles":
+                asyncio.create_task(_titles(ag, send))
+            elif t == "set_todos":
+                items = [{"content": str(i.get("content", ""))[:300], "status": i.get("status") if i.get("status") in ("pending", "in_progress", "completed") else "pending"}
+                         for i in m.get("items", []) if str(i.get("content", "")).strip()][:40]
+                ag.session["todos"] = items
+                A.save(ag.session)
+                await send({"type": "todos", "items": items})
             elif t == "compact" and not busy():
                 try:
                     r = await ag.compact(cfg["model"], cfg["num_ctx"], str(m.get("focus", "")))

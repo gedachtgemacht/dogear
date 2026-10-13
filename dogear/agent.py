@@ -100,6 +100,44 @@ def list_skills(root: Path) -> list[dict]:
     return out
 
 
+def user_positions(msgs: list[dict]) -> list[int]:
+    """Message indices of the real user turns (not review nudges, not compaction summaries)."""
+    return [i for i, m in enumerate(msgs) if m["role"] == "user" and not m.get("review") and not m.get("compact")]
+
+
+def fork_session(src: dict, turn: int, where: str) -> tuple[dict, dict | None]:
+    """Branch a session. where='after': keep turns 0..turn. where='before': keep turns 0..turn-1 (to edit turn `turn`).
+    Returns (new session, file restore point {sha, root} or None)."""
+    import copy
+    msgs, pos = src["messages"], user_positions(src["messages"])
+    if not pos:
+        raise ValueError("Nothing to branch from yet.")
+    turn = max(0, min(turn, len(pos) - 1))
+    keep = turn if where == "before" else turn + 1             # number of turns that stay
+    cut = pos[keep] if keep < len(pos) else len(msgs)
+    new = new_session(src["root"])
+    new["messages"] = copy.deepcopy(msgs[:cut])
+    new["todos"] = copy.deepcopy(src.get("todos", [])) if where == "after" and keep == len(pos) else []
+    new["title"] = (src["title"] + " (branch)")[:60]
+    new["parent"] = {"id": src["id"], "turn": turn, "where": where, "title": src["title"]}
+    new["lineage"] = src.get("lineage", src["id"])
+    new["pins"] = [p for p in src.get("pins", []) if p < keep]
+    new["titles"] = {k: v for k, v in (src.get("titles") or {}).items() if int(k) < keep}
+    restore = None
+    for m in reversed(msgs[:cut]):                              # files as they were at the branch point
+        cpt = (m.get("summary") or {}).get("checkpoint")
+        if cpt:
+            restore = {"sha": cpt.get("after") or cpt.get("before"), "root": cpt.get("root")}
+            break
+    if where == "before":                                       # editing turn N: files as before turn N ran
+        end = pos[turn + 1] if turn + 1 < len(pos) else len(msgs)
+        for m in msgs[pos[turn]:end]:
+            cpt = (m.get("summary") or {}).get("checkpoint")
+            if cpt and cpt.get("before"):
+                restore = {"sha": cpt["before"], "root": cpt.get("root")}
+    return new, restore if restore and restore.get("sha") else None
+
+
 def new_session(root: str) -> dict:
     return {"id": uuid.uuid4().hex[:10], "title": "New session", "root": root, "messages": [], "todos": [], "updated": time.time()}
 
@@ -115,12 +153,17 @@ def load(sid: str) -> dict | None:
     return json.loads(f.read_text()) if f.exists() else None
 
 
+def lineage_of(s: dict) -> str:
+    return s.get("lineage") or s["id"]
+
+
 def listing() -> list[dict]:
     out = []
     for f in SESSIONS.glob("*.json"):
         try:
             s = json.loads(f.read_text())
-            out.append({"id": s["id"], "title": s["title"], "root": s["root"], "updated": s["updated"]})
+            out.append({"id": s["id"], "title": s["title"], "root": s["root"], "updated": s["updated"],
+                        "parent": (s.get("parent") or {}).get("id"), "lineage": lineage_of(s)})
         except Exception:
             pass
     return sorted(out, key=lambda x: -x["updated"])
@@ -464,7 +507,7 @@ class Agent:
         if names and not await llm.has_vision(self.client, model):
             await self.send({"type": "notice", "text": f"{model} cannot see images; they are ignored for this run. Pick a vision model."})
             names = []
-        s["messages"].append({"role": "user", "content": text, **({"imgs": names} if names else {}), **({"review": True} if _review else {})})
+        s["messages"].append({"role": "user", "content": text, "mode": mode, **({"imgs": names} if names else {}), **({"review": True} if _review else {})})
         if s["title"] == "New session" and not _review:
             s["title"] = text.strip().splitlines()[0][:48]
         save(s)
@@ -498,6 +541,10 @@ class Agent:
             extra += ("\nPLAN MODE: you may only read and research. Do not change anything. Investigate the code and the request, "
                       "then answer with a concrete plan: goal, files to change, steps in order, risks, how you will verify. "
                       "The user will switch the mode to let you carry it out.\n")
+        if s.get("todos"):
+            mark = {"completed": "[x]", "in_progress": "[~]", "pending": "[ ]"}
+            extra += "\nCurrent task list (the user may have edited it; keep it in sync with TodoWrite):\n" + "\n".join(
+                f"- {mark.get(t.get('status'), '[ ]')} {t.get('content', '')}" for t in s["todos"]) + "\n"
         skills, skill_names = load_skills(text, ctx.root)
         if skill_names:
             await self.send({"type": "notice", "text": "Skills: " + ", ".join(skill_names)})
@@ -792,6 +839,36 @@ class Agent:
                 pass
         serious = any(f["sev"] in ("high", "medium") for r in results for f in r["findings"])
         return f"Page: {page}\n" + format_report(results) if serious else ""
+
+    async def make_titles(self, s: dict) -> dict:
+        """Short titles for the outline, written by the helper model. Cached in the session."""
+        msgs, pos = s["messages"], user_positions(s["messages"])
+        titles = s.setdefault("titles", {})
+        todo = []
+        for n, i in enumerate(pos):
+            if str(n) in titles:
+                continue
+            end = pos[n + 1] if n + 1 < len(pos) else len(msgs)
+            ans = next((m.get("content", "") for m in reversed(msgs[i:end]) if m["role"] == "assistant" and m.get("content")), "")
+            todo.append({"turn": n, "request": msgs[i]["content"][:240], "answer": ans[:200]})
+        if not todo:
+            return titles
+        helper = await profiles.pick_helper(self.client) or HELPER_MODEL
+        schema = {"type": "object", "properties": {"titles": {"type": "array", "items": {"type": "object", "properties": {
+            "turn": {"type": "integer"}, "title": {"type": "string"}}, "required": ["turn", "title"]}}}, "required": ["titles"]}
+        body = {"model": helper, "stream": False, "think": False, "format": schema, "options": {"temperature": 0, "num_ctx": 8192},
+                "messages": [{"role": "system", "content": "Write a short title (2-6 words, no quotes, no trailing period) for each conversation turn, "
+                              "in the language of the request. Name what was asked or done, not generic words like 'Question'."},
+                             {"role": "user", "content": json.dumps(todo[:40], ensure_ascii=False)}]}
+        try:
+            r = await self.client.post(f"{llm.URL}/api/chat", json=body, timeout=60)
+            for t in json.loads(r.json()["message"]["content"]).get("titles", []):
+                if isinstance(t.get("turn"), int) and isinstance(t.get("title"), str) and t["title"].strip():
+                    titles[str(t["turn"])] = t["title"].strip()[:60]
+            save(s)
+        except Exception:
+            pass
+        return titles
 
     async def _present(self, s, idx, user_idx, question, answer, hints):
         helper = await profiles.pick_helper(self.client) or pres.MODEL

@@ -300,7 +300,10 @@ class Browser:
             await send(msg)
 
     async def _on_frame(self, p):
-        await self.cdp.call("Page.screencastFrameAck", {"sessionId": p["sessionId"]}, session=self.sess)
+        try:
+            await self.cdp.call("Page.screencastFrameAck", {"sessionId": p["sessionId"]}, session=self.sess)
+        except BrowserError:
+            return                                   # the browser is shutting down
         self.last_frame = {"type": "frame", "d": p["data"], "w": int(p["metadata"].get("deviceWidth", self.vw)),
                            "h": int(p["metadata"].get("deviceHeight", self.vh))}
         now = time.time()

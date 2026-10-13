@@ -95,7 +95,8 @@ def classify(params_b: float | None, moe: bool, active_b: float | None) -> tuple
     if moe:
         params_b *= 0.6                              # a small sparse model is weaker than its parameter count suggests
     if params_b <= 8:
-        return "small", "lean", "lean"
+        # measured on qwen3.5:4b: standard 6/7, full 4.5/7, lean 4/7. Small models get the standard toolbox with a short prompt.
+        return "small", "standard", "lean"
     if params_b <= 16:
         return "medium", "standard", "full"
     return ("large" if params_b >= 60 else "medium"), "full", "full"

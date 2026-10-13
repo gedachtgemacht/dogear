@@ -69,7 +69,7 @@ function md(src) {
 }
 
 /* ============================================================ state */
-const S = { wsAuto: false, wsDismissed: false, turns: [], turn: null, curWrap: null, ws: null, busy: false, root: "", mode: "edit", cur: null, curText: "", think: null, thinkText: "", cards: {}, queue: [],
+const S = { meta: { parent: null, pins: [], titles: {}, lineage: null }, todos: [], ultra: null, restore: null, railOpen: false, wsAuto: false, wsDismissed: false, turns: [], turn: null, curWrap: null, ws: null, busy: false, root: "", mode: "edit", cur: null, curText: "", think: null, thinkText: "", cards: {}, queue: [],
   changed: new Map(), flash: new Set(), openDirs: new Set(), sid: null, ask: null, t0: 0, tok: 0, follow: true, st: null, hist: [], hi: 0, webTouched: false };
 const log = $("#log");
 const rel = p => (S.root && p.startsWith(S.root + "/")) ? p.slice(S.root.length + 1) : p;
@@ -88,14 +88,20 @@ function emptyState() {
 const clearEmpty = () => $(".empty-state", log)?.remove();
 
 /* ---- turns: one user message, its work (process) and the answer (focus) */
-function newTurn(text, imgs = []) {
+function newTurn(text, imgs = [], mode = S.mode) {
   clearEmpty();
-  const t = { el: el("div", "turn"), work: el("div", "work"), answer: el("div", "answer"), after: el("div", "after"), sum: null, raw: "", pres: null, code: [] };
+  const t = { el: el("div", "turn"), work: el("div", "work"), answer: el("div", "answer"), after: el("div", "after"), sum: null, raw: "", pres: null, code: [],
+              i: S.turns.length, text, mode };
   const u = el("div", "u"), i = el("div", "in"); i.append(el("span", "", text));
   if (imgs.length) { const g = el("div", "imgs"); imgs.forEach(src => { const im = el("img"); im.src = src; im.onclick = () => window.open(src, "_blank"); g.append(im); }); i.append(g); }
   u.append(i);
   t.work.hidden = true; t.el.append(u, t.work, t.answer, t.after); log.append(t.el);
-  S.turns.push(t); S.turn = t; return t;
+  const bar = el("div", "tact"), btn = (txt, title, fn) => { const b = el("button", "", txt); b.title = title; b.type = "button"; b.onclick = e => { e.stopPropagation(); fn(b); }; bar.append(b); return b; };
+  t.pinBtn = btn("★", "Pin this turn", b => { const on = !S.meta.pins.includes(t.i); sendWS({ type: "pin", turn: t.i, on }); });
+  btn("⑂", "Branch from here (keep this turn and everything before)", () => !S.busy && sendWS({ type: "fork", turn: t.i, where: "after" }));
+  btn("✎", "Edit this message and branch before it", () => !S.busy && sendWS({ type: "fork", turn: t.i, where: "before" }));
+  t.el.append(bar); t.bar = bar;
+  S.turns.push(t); S.turn = t; syncPin(t); renderOutline(); return t;
 }
 const turn = () => S.turn || newTurn("");
 const workAdd = node => { const w = turn().work; w.hidden = false; w.append(node); };
@@ -179,6 +185,15 @@ function renderBlocks(t, p) {
     const f = el("div", "follow-ups"); f.append(el("span", "lbl", "Next"));
     for (const x of p.followups) { const c = el("button", "fu", x); c.onclick = () => { $("#input").value = x; $("#input").focus(); }; f.append(c); }
     t.after.append(f);
+  }
+  if (t.mode === "plan") {
+    const items = p.blocks.filter(b => b.type === "steps" || b.type === "list").flatMap(b => b.items).slice(0, 20);
+    if (items.length >= 2) {
+      const u = el("button", "useplan", "Use as plan and switch to Edits");
+      u.onclick = () => { sendWS({ type: "set_todos", items: items.map(x => ({ content: x.replace(/\*\*/g, "").slice(0, 200), status: "pending" })) });
+        setMode("edit"); $("#input").value = "Carry out the plan, step by step, and keep the task list current."; $("#input").focus(); u.remove(); };
+      t.after.append(u);
+    }
   }
   const rt = el("button", "rawtoggle", "Show original");
   rt.onclick = () => { const raw = rt.dataset.on === "1";
@@ -582,9 +597,9 @@ function handle(m) {
     case "approval": approvalBox(m); break;
     case "sub": { const c = S.cards[m.id]; if (c) { c.card.classList.add("open"); c.tb.classList.add("show"); c.tb.append(el("div", "subline", m.text)); } break; }
     case "ask": askBox(m); break;
-    case "ultra": ultraEvent(m); break;
+    case "ultra": ultraEvent(m); railUltra(m); break;
     case "undone": turn().after.append(el("div", "empty", `Restored ${m.files.length} file${m.files.length === 1 ? "" : "s"} to the state before the run.`)); scheduleTree(); break;
-    case "result": { const c = S.cards[m.id]; if (c) { finishCard(c, m.ok, m.text, m.meta || {}); if (c.name.startsWith("browser_")) agentBusy(false); } break; }
+    case "result": { const c = S.cards[m.id]; if (c && c.name === "Ultra") { S.ultra = null; renderRail(S.todos); } if (c) { finishCard(c, m.ok, m.text, m.meta || {}); if (c.name.startsWith("browser_")) agentBusy(false); } break; }
     case "changed": {
       const p = rel(m.path); S.changed.set(p, m.created ? "A" : (S.changed.get(p) || "M")); S.flash.add(p); setTimeout(() => { S.flash.delete(p); }, 2000);
       if (/\.(html?|css|js|mjs|svg)$/i.test(p)) S.webTouched = true;
@@ -596,7 +611,12 @@ function handle(m) {
     case "term_start": if (m.background) openWS(null, true); termStart(m); break;
     case "term": termWrite(m.id, m.text); break;
     case "term_end": termEnd(m.id, m.code); break;
-    case "todos": renderTodos(m.items); break;
+    case "todos": renderTodos(m.items); renderRail(m.items); break;
+    case "pins": S.meta.pins = m.pins; S.turns.forEach(syncPin); renderOutline(); break;
+    case "titles": if (m.session === S.sid) { S.meta.titles = m.titles; renderOutline(); } break;
+    case "forked": renderSession(m.session); S.restore = m.restore; renderBranchBar();
+      if (m.prefill) { $("#input").value = m.prefill; $("#input").focus(); }
+      log.append(el("div", "empty", m.prefill ? "Branched before this message. Edit it and send." : "Branched. This is a copy; the original stays unchanged.")); log.scrollTop = log.scrollHeight; refresh(); break;
     case "mcp": renderMcp(m.servers); break;
     case "usage": {
       S.tok += m.out; const pct = m.prompt / m.ctx, i = $("#meter i");
@@ -605,9 +625,9 @@ function handle(m) {
     }
     case "notice": { turn().after.append(el("div", "empty", m.text)); break; }
     case "error": { const e = el("div", "errbox"); e.append(el("b", "", "Error"), el("span", "", m.text)); turn().answer.append(e); break; }
-    case "summary": { const t = S.turns[m.user_idx] || S.turn; if (t) { if (S.cur && t === S.turn) t.raw = S.curText; applySummary(t, m); } break; }
-    case "present": { const t = S.turns[m.user_idx] || S.turn; if (t) { if (!t.raw && t.answer.textContent) t.raw = t.answer.textContent; renderBlocks(t, m); } break; }
-    case "done": if (S.cur && S.turn) S.turn.raw = S.curText; setBusy(false); agentBusy(false); refresh(); if (S.follow && S.webTouched) openWS("@preview", true); S.webTouched = false; break;
+    case "summary": { const t = S.turns[m.user_idx] || S.turn; if (t) { if (S.cur && t === S.turn) t.raw = S.curText; applySummary(t, m); offerDiff(t); } break; }
+    case "present": { const t = S.turns[m.user_idx] || S.turn; if (t) { if (!t.raw && t.answer.textContent) t.raw = t.answer.textContent; renderBlocks(t, m); offerDiff(t); } break; }
+    case "done": if (S.cur && S.turn) S.turn.raw = S.curText; if (S.turns.length >= 4) sendWS({ type: "titles" }); setBusy(false); agentBusy(false); refresh(); if (S.follow && S.webTouched) openWS("@preview", true); S.webTouched = false; break;
     case "session": renderSession(m.session); break;
     case "review_start": if (S.cur) { S.cur.classList.add("narr"); workAdd(S.cur); S.cur = null; S.curText = ""; } turn().after.querySelectorAll(".follow-ups").forEach(n => n.remove()); break;
     case "compacted": renderSession(m.session);
@@ -620,6 +640,7 @@ function handle(m) {
 
 function renderSession(s) {
   S.sid = s.id; S.root = s.root; $("#root").value = s.root; S.cards = {}; S.queue = []; S.cur = null; S.changed.clear();
+  S.meta = { parent: s.parent || null, pins: s.pins || [], titles: s.titles || {}, lineage: s.lineage || s.id }; S.ultra = null;
   $("#term").innerHTML = ""; for (const k in T) delete T[k]; termRun(); $("#term-wrap").hidden = true;
   log.innerHTML = ""; S.turns = []; S.turn = null; if (!s.messages.length) emptyState();
   for (const m of s.messages) {
@@ -627,7 +648,7 @@ function renderSession(s) {
       if (m.compact) {
         const d = el("details", "compactmark"); d.append(el("summary", "", `Earlier conversation condensed (${m.replaced || "?"} messages)`), el("pre", "", m.content.replace(/^\[[^\]]*\]\n*/, "")));
         clearEmpty(); log.append(d); S.turn = null;
-      } else if (!m.review) newTurn(m.content, (m.imgs || []).map(n => "/img/" + n));
+      } else if (!m.review) newTurn(m.content, (m.imgs || []).map(n => "/img/" + n), m.mode || "edit");
     }
     else if (m.role === "assistant") {
       const t = turn(), calls = m.tool_calls || [];
@@ -650,9 +671,181 @@ function renderSession(s) {
         if (ok && m.meta?.diff) S.changed.set(rel(m.meta.path || ""), m.meta.created ? "A" : "M"); }
     }
   }
-  renderTodos(s.todos || []); E.files = {}; E.tabs = ["@preview"]; activate("@preview"); renderTree();
+  renderTodos(s.todos || []); renderRail(s.todos || []); renderBranchBar(); renderOutline();
+  S.turns.forEach(t => { syncPin(t); if (t.raw) offerDiff(t); });
+  E.files = {}; E.tabs = ["@preview"]; activate("@preview"); renderTree();
   log.scrollTop = log.scrollHeight; refresh();
   const tab = new URLSearchParams(location.search).get("tab"); if (tab) activate(tab);
+}
+
+/* ============================================================ plan rail */
+const LANES = [["pending", "To do", "todo"], ["in_progress", "Doing", "doing"], ["completed", "Done", "done"]];
+let railSeen = {};
+function railUltra(m) {
+  if (m.event === "phase") S.ultra = { ...(S.ultra || { running: 0, done: 0, failed: 0 }), phase: m.phase };
+  else if (m.event === "agent") {
+    const u = S.ultra = S.ultra || { phase: m.phase, running: 0, done: 0, failed: 0, ag: {} };
+    u.ag = u.ag || {}; u.ag[m.id] = m.state;
+    const v = Object.values(u.ag); u.running = v.filter(x => x === "running").length; u.done = v.filter(x => x === "done").length; u.failed = v.filter(x => x === "failed").length;
+  }
+  renderRail(S.todos);
+}
+function renderRail(items) {
+  S.todos = items || [];
+  const r = $("#rail"); r.innerHTML = "";
+  const active = S.todos.length > 0 || !!S.ultra;
+  r.hidden = !active; if (!active) return;
+  r.classList.toggle("open", S.railOpen); r.classList.toggle("hasultra", !!S.ultra);
+  const done = S.todos.filter(t => t.status === "completed").length, now = S.todos.find(t => t.status === "in_progress");
+  const head = el("div", "rhead");
+  const prog = el("div", "rprog"), bar = el("i"); bar.style.width = (S.todos.length ? done / S.todos.length * 100 : 0) + "%"; prog.append(bar);
+  head.append(el("b", "", "Plan"), el("span", "rcount", `${done}/${S.todos.length}`), prog);
+  if (now && !S.railOpen) head.append(el("span", "rnow", now.content));
+  head.append(el("button", "rtog", S.railOpen ? "▾" : "▸"));
+  head.onclick = () => { S.railOpen = !S.railOpen; store.set("dogear-rail", S.railOpen ? "1" : "0"); renderRail(S.todos); };
+  r.append(head);
+  const lanes = el("div", "rlanes");
+  for (const [st, name, cls] of LANES) {
+    const lane = el("div", `lane ${cls}`), list = S.todos.map((t, i) => ({ t, i })).filter(x => x.t.status === st);
+    const h = el("h4", ""); h.append(el("span", "", name), el("span", "", String(list.length))); lane.append(h);
+    for (const { t, i } of list) {
+      const c = el("div", "card2", t.content); c.title = "Click to move to the next column";
+      if (railSeen[t.content] && railSeen[t.content] !== st) c.classList.add("moved");
+      c.onclick = () => { const next = { pending: "in_progress", in_progress: "completed", completed: "pending" }[st];
+        sendWS({ type: "set_todos", items: S.todos.map((x, k) => k === i ? { ...x, status: next } : x) }); };
+      lane.append(c);
+    }
+    lanes.append(lane);
+  }
+  r.append(lanes);
+  if (S.ultra) { const u = S.ultra; r.append(el("div", "rultra", `Ultra · ${u.phase || "starting"} · ${u.running || 0} running · ${u.done || 0} done${u.failed ? ` · ${u.failed} failed` : ""}`)); }
+  railSeen = Object.fromEntries(S.todos.map(t => [t.content, t.status]));
+}
+
+/* ============================================================ outline, pins, branches */
+const firstLine = s => { const l = (s || "").trim().split("\n")[0]; return l.length > 60 ? l.slice(0, 58) + "…" : l; };
+const turnTitle = t => S.meta.titles?.[t.i] || firstLine(t.text) || `Turn ${t.i + 1}`;
+function syncPin(t) { const on = S.meta.pins.includes(t.i); t.pinBtn?.classList.toggle("on", on); t.bar?.classList.toggle("pinned", on); }
+function jumpTo(t) { t.el.scrollIntoView({ block: "start", behavior: "smooth" }); t.el.classList.remove("flash"); void t.el.offsetWidth; t.el.classList.add("flash"); }
+function renderOutline() {
+  const btn = $("#outline-btn"), box = $("#outline");
+  btn.hidden = S.turns.length < 2; if (btn.hidden) { box.hidden = true; return; }
+  if (box.hidden) return;
+  const q = box.querySelector("input")?.value || ""; box.innerHTML = "";
+  const inp = el("input"); inp.placeholder = "Filter turns…"; inp.value = q; inp.oninput = renderOutline; box.append(inp);
+  const match = t => !inp.value || (turnTitle(t) + " " + t.text).toLowerCase().includes(inp.value.toLowerCase());
+  const row = t => { const r = el("div", "oi"), st = el("button", `star${S.meta.pins.includes(t.i) ? " on" : ""}`, "★");
+    st.onclick = e => { e.stopPropagation(); sendWS({ type: "pin", turn: t.i, on: !S.meta.pins.includes(t.i) }); };
+    const meta = [t.sum && t.sum.dataset.n ? t.sum.dataset.n : ""].filter(Boolean).join(" ");
+    r.append(el("span", "n", String(t.i + 1)), el("span", "t", turnTitle(t)), el("span", "meta", meta), st); r.onclick = () => { jumpTo(t); box.hidden = true; $("#outline-btn").classList.remove("on"); }; return r; };
+  const pinned = S.turns.filter(t => S.meta.pins.includes(t.i) && match(t));
+  if (pinned.length) { box.append(el("h5", "", "Pinned")); pinned.forEach(t => box.append(row(t))); }
+  box.append(el("h5", "", "All turns")); S.turns.filter(match).forEach(t => box.append(row(t)));
+}
+function renderBranchBar() {
+  const b = $("#branchbar"), p = S.meta.parent; b.hidden = !p; if (!p) return; b.innerHTML = "";
+  b.append(el("span", "", `Branch of “${p.title}” · ${p.where === "before" ? `edited at turn ${p.turn + 1}` : `from turn ${p.turn + 1}`}`));
+  const add = (txt, fn, title) => { const x = el("button", "", txt); if (title) x.title = title; x.onclick = fn; b.append(x); };
+  add("Compare", () => openCompare());
+  add("Open original", () => !S.busy && sendWS({ type: "open", id: p.id }));
+  if (S.restore) add("Restore this branch's files", () => { sendWS({ type: "undo", root: S.restore.root, to: S.restore.sha }); S.restore = null; renderBranchBar(); }, "Puts the project files back to the state at the branch point (a safety checkpoint is made first)");
+}
+
+const userPos = msgs => msgs.map((m, i) => (m.role === "user" && !m.review && !m.compact) ? i : -1).filter(i => i >= 0);
+function turnsOf(s) {
+  const msgs = s.messages, pos = userPos(msgs);
+  return pos.map((i, n) => { const end = pos[n + 1] ?? msgs.length, part = msgs.slice(i, end);
+    const ans = [...part].reverse().find(m => m.role === "assistant" && m.content && !(m.tool_calls || []).length);
+    return { user: msgs[i].content, answer: ans ? ans.content : "", summary: ans?.summary || part.find(m => m.summary)?.summary || null }; });
+}
+async function openCompare() {
+  const dlg = $("#cmp"), sel = $("#cmp-sel"), body = $("#cmp-body"); dlg.hidden = false; body.innerHTML = "Loading…";
+  const list = (await (await fetch(`/api/branches?id=${S.sid}`)).json()).filter(b => b.id !== S.sid);
+  sel.innerHTML = ""; list.forEach(b => sel.append(new Option(`${b.title} · ${b.turns} turns`, b.id)));
+  if (S.meta.parent && list.some(b => b.id === S.meta.parent.id)) sel.value = S.meta.parent.id;
+  const draw = async () => {
+    if (!sel.value) { body.innerHTML = "No other branch to compare with yet. Branch from any turn with ⑂."; return; }
+    const [a, b] = await Promise.all([S.sid, sel.value].map(id => fetch(`/api/session/${id}`).then(r => r.json())));
+    const A = turnsOf(a), B = turnsOf(b); let k = 0; while (k < A.length && k < B.length && A[k].user === B[k].user && A[k].answer === B[k].answer) k++;
+    $("#cmp-meta").textContent = `${k} shared turn${k === 1 ? "" : "s"}`; body.innerHTML = "";
+    body.append(el("div", "colh", `${a.title} (this)`), el("div", "colh", b.title));
+    if (k) body.append(el("div", "same", `The first ${k} turn${k === 1 ? " is" : "s are"} identical.`));
+    const files = x => x && x.changes && x.changes.length ? x.changes.map(c => `${c.created ? "+" : "~"} ${c.path.split("/").slice(-2).join("/")}`).join("  ") : "no file changes";
+    for (let i = k; i < Math.max(A.length, B.length); i++) {
+      const cell = (T, side) => { const c = el("div", "cell"); if (!T) { c.append(el("div", "q", "(no turn)")); return c; }
+        const q = el("div", "q", T.user.slice(0, 160)), an = el("div", "a"); an.innerHTML = T.answer ? md(T.answer) : "(no answer)";
+        c.append(q, an, el("div", "m", `${T.summary ? `${plural(T.summary.steps || 0, "step")} · ${T.summary.secs || 0}s · ` : ""}${files(T.summary)}`)); c._ans = an; return c; };
+      const ca = cell(A[i]), cb = cell(B[i]);
+      if (A[i] && B[i] && A[i].answer && B[i].answer) {
+        const t = el("button", "difftoggle", "Show differences"); t.onclick = () => { const on = t.classList.toggle("on"); if (on) { const d = diffWords(A[i].answer, B[i].answer);
+            if (d) { cb._ans.innerHTML = d.html; cb._ans.classList.add("dview"); } } else { cb._ans.innerHTML = md(B[i].answer); cb._ans.classList.remove("dview"); } };
+        body.append(ca, cb, t); continue;
+      }
+      body.append(ca, cb);
+    }
+  };
+  sel.onchange = draw; await draw();
+}
+
+/* ---- word diff for revisions */
+function diffWords(aText, bText) {
+  const tok = s => s.match(/\n|[^\s]+/g) || [], A = tok(aText), B = tok(bText);
+  let p = 0; while (p < A.length && p < B.length && A[p] === B[p]) p++;
+  let ea = A.length, eb = B.length; while (ea > p && eb > p && A[ea - 1] === B[eb - 1]) { ea--; eb--; }
+  const a = A.slice(p, ea), b = B.slice(p, eb), n = a.length, m = b.length;
+  if (n * m > 12e6) return null;
+  const W = m + 1, dp = new Uint16Array((n + 1) * W);
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+    dp[i * W + j] = a[i] === b[j] ? dp[(i + 1) * W + j + 1] + 1 : Math.max(dp[(i + 1) * W + j], dp[i * W + j + 1]);
+  const ops = A.slice(0, p).map(x => ["=", x]); let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { ops.push(["=", a[i]]); i++; j++; }
+    else if (dp[(i + 1) * W + j] >= dp[i * W + j + 1]) ops.push(["-", a[i++]]); else ops.push(["+", b[j++]]);
+  }
+  while (i < n) ops.push(["-", a[i++]]); while (j < m) ops.push(["+", b[j++]]);
+  A.slice(ea).forEach(x => ops.push(["=", x]));
+  let html = "", add = 0, del = 0, run = null, lead = false;   // lead: a separating space is needed before the next piece
+  const flush = () => {
+    if (!run) return;
+    const t = esc(run.w.join(" "));
+    html += (lead ? " " : "") + (run.k === "=" ? t : `<${run.k === "+" ? "ins" : "del"}>${t}</${run.k === "+" ? "ins" : "del"}>`);
+    lead = true; run = null;
+  };
+  for (const [k, w] of ops) {
+    if (w === "\n") { flush(); html += "\n"; lead = false; continue; }
+    if (k === "+") add++; if (k === "-") del++;
+    if (!run || run.k !== k) { flush(); run = { k, w: [] }; }
+    run.w.push(w);
+  }
+  flush();
+  return { html, add, del };
+}
+const wordSet = s => new Set((s.toLowerCase().match(/\p{L}[\p{L}\p{N}]+/gu) || []));
+const REVISION = /\b(rewrite|revise|rephrase|reword|polish|improve|shorter|longer|tweak|edit|change|update|redo|again|überarbeit\w*|kürzer|länger|umschreib\w*|umformulier\w*|verbessere|ändere|nochmal|anders)\b/i;
+function offerDiff(t) {
+  t.after.querySelectorAll(".difftoggle").forEach(n => n.remove());
+  if (!t.raw || t.raw.length < 100) return;
+  const earlier = S.turns.slice(0, t.i).filter(o => o.raw && o.raw.length >= 100), isRev = REVISION.test(t.text || "");
+  let best = null;
+  if (isRev && earlier.length) best = earlier[earlier.length - 1];          // a revision request: compare with the latest version
+  else {                                                                      // otherwise only when the texts are clearly related
+    const mine = wordSet(t.raw); let bs = 0;
+    for (const o of earlier) {
+      const theirs = wordSet(o.raw); let inter = 0; for (const w of mine) if (theirs.has(w)) inter++;
+      const j = inter / (mine.size + theirs.size - inter); if (j > bs) { bs = j; best = o; }
+    }
+    if (bs < 0.3) best = null;
+  }
+  if (!best || t.raw === best.raw) return;
+  const btn = el("button", "difftoggle", `Show changes vs turn ${best.i + 1}`);
+  btn.onclick = () => {
+    const on = btn.classList.toggle("on");
+    if (!on) { t.pres ? renderBlocks(t, t.pres) : setAnswerText(t, t.raw); t.after.append(btn); return; }
+    const d = diffWords(best.raw, t.raw); if (!d) { btn.textContent = "Too large to diff"; return; }
+    t.answer.innerHTML = ""; const st = el("div", "dstat"); st.innerHTML = `Turn ${best.i + 1} → turn ${t.i + 1}: <span class="a">+${d.add} words</span> <span class="d">−${d.del} words</span>`;
+    const v = el("div", "dview"); v.innerHTML = d.html; t.answer.append(st, v);
+  };
+  t.after.append(btn);
 }
 
 /* ============================================================ input */
@@ -772,6 +965,11 @@ function connect() {
   $("#new").onclick = () => !S.busy && sendWS({ type: "new" });
   $("#refresh").onclick = renderTree; $("#mcp-reload").onclick = () => sendWS({ type: "mcp_reload" });
   initBrowser();
+  S.railOpen = store.get("dogear-rail", "0") === "1";
+  $("#outline-btn").onclick = e => { e.stopPropagation(); const b = $("#outline"); b.hidden = !b.hidden; $("#outline-btn").classList.toggle("on", !b.hidden);
+    if (!b.hidden) { renderOutline(); sendWS({ type: "titles" }); b.querySelector("input")?.focus(); } };
+  $("#cmp-x").onclick = () => { $("#cmp").hidden = true; };
+  $("#cmp").addEventListener("pointerdown", e => { if (e.target === $("#cmp")) $("#cmp").hidden = true; });
   $("#menu").onclick = e => { e.stopPropagation(); drawer($("#drawer").hidden); };
   $("#ws-toggle").onclick = () => wsOpen() ? closeWS(true) : (S.wsDismissed = false, openWS(null, false));
   $("#gear").onclick = e => { e.stopPropagation(); $("#pop").hidden = !$("#pop").hidden; };
@@ -779,6 +977,7 @@ function connect() {
   document.addEventListener("pointerdown", e => {
     if (!$("#drawer").hidden && !e.target.closest("#drawer, #menu")) drawer(false);
     if (!$("#pop").hidden && !e.target.closest("#pop, #gear")) $("#pop").hidden = true;
+    if (!$("#outline").hidden && !e.target.closest("#outline, #outline-btn")) { $("#outline").hidden = true; $("#outline-btn").classList.remove("on"); }
   });
   $("#term-clear").onclick = () => { $("#term").innerHTML = ""; for (const k in T) delete T[k]; termRun(); $("#term-wrap").hidden = true; };
   await refresh(); emptyState(); renderTabs(); renderTree(); renderMcp([]); connect(); setBusy(false);

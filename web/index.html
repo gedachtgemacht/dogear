@@ -45,6 +45,12 @@
 
   <main class="ide" id="ide">
     <section class="panel chat">
+      <div class="rail" id="rail" hidden></div>
+      <div class="branchbar" id="branchbar" hidden></div>
+      <button class="outline-btn" id="outline-btn" title="Outline and pinned messages" aria-label="Outline" hidden>
+        <svg viewBox="0 0 16 16" width="15" height="15"><path d="M2 3.5h12M2 8h8M2 12.5h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
+      </button>
+      <div class="outline" id="outline" hidden></div>
       <div class="scroll" id="log"></div>
       <div class="spin" id="spin" hidden><i></i><span id="spin-t"></span></div>
       <div class="slash" id="slash" hidden></div>
@@ -108,6 +114,12 @@
       </div>
     </aside>
   </main>
+</div>
+<div class="cmp" id="cmp" hidden>
+  <div class="cmp-box">
+    <header><b>Compare branches</b><span id="cmp-meta"></span><select id="cmp-sel" aria-label="Compare with"></select><button id="cmp-x" class="mini" aria-label="Close">✕</button></header>
+    <div class="cmp-body" id="cmp-body"></div>
+  </div>
 </div>
 <script src="/static/app.js"></script>
 </body>

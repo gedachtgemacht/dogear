@@ -1,0 +1,79 @@
+[
+ {
+  "model": "qwen3.5:4b",
+  "task": "fizzbuzz",
+  "score": 1.0,
+  "note": "ok",
+  "steps": 4,
+  "tool_errors": 1,
+  "tps": 51.2,
+  "error": "",
+  "secs": 11
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "fix_median",
+  "score": 1.0,
+  "note": "ok",
+  "steps": 11,
+  "tool_errors": 2,
+  "tps": 46.5,
+  "error": "",
+  "secs": 30
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "todo_collect",
+  "score": 0.0,
+  "note": "0/6 found, 0 wrong",
+  "steps": 2,
+  "tool_errors": 1,
+  "tps": 46.5,
+  "error": "no response",
+  "secs": 480
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "kv_cli",
+  "score": 1.0,
+  "note": "8/8 commands right",
+  "steps": 9,
+  "tool_errors": 1,
+  "tps": 46.9,
+  "error": "",
+  "secs": 43
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "web_counter",
+  "score": 0.0,
+  "note": "index.html missing",
+  "steps": 0,
+  "tool_errors": 0,
+  "tps": 48.3,
+  "error": "",
+  "secs": 10
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "rename_func",
+  "score": 1.0,
+  "note": "ok",
+  "steps": 14,
+  "tool_errors": 1,
+  "tps": 46.7,
+  "error": "",
+  "secs": 27
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "cli_feature",
+  "score": 0.5,
+  "note": "json {\"the\": 4, \"cat\": 1, \"and\": 2, \"dog\": 1, \"bird\": 1, plain ok",
+  "steps": 4,
+  "tool_errors": 0,
+  "tps": 48.0,
+  "error": "",
+  "secs": 22
+ }
+]
