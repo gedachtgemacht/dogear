@@ -460,6 +460,7 @@ function browserEvent(m) {
       else if (m.kind === "scroll") agentAt(m.x, m.y, "scroll");
       else if (m.kind === "type") $("#bcur-l").textContent = `typing "${m.label}"`;
       break;
+    case "b_scroll": B.sc = m; drawScrollbars(); break;
     case "b_marks": { const few = m.rects.length <= 12;   // dense pages: quiet outlines only, no chips
       for (const r of m.rects.slice(0, 80)) {
         const d = el("div", few ? "mark" : "mark quiet"); d.style.cssText = `left:${r.x * B.scale}px;top:${r.y * B.scale}px;width:${r.w * B.scale}px;height:${r.h * B.scale}px`;
@@ -480,8 +481,43 @@ function logLine(level, text) {
 }
 let pvTimer = 0;
 function reloadPreview() { clearTimeout(pvTimer); pvTimer = setTimeout(() => sendWS({ type: "b_reload_preview" }), 250); }
+/* scrollbars for the live view: the headless page hides its own, so draw them from the page metrics */
+function drawScrollbars() {
+  const m = B.sc; if (!m) return;
+  const set = (bar, on, pos, size) => {
+    bar.hidden = !on; if (!on) return;
+    const th = bar.firstElementChild, v = bar.classList.contains("v");
+    th.style[v ? "top" : "left"] = pos + "%"; th.style[v ? "height" : "width"] = size + "%";
+  };
+  const vy = m.h > m.vh + 2, hx = m.w > m.vw + 2;
+  set($("#vbar"), vy, (m.y / m.h) * 100, Math.max(8, (m.vh / m.h) * 100));
+  set($("#hbar"), hx, (m.x / m.w) * 100, Math.max(8, (m.vw / m.w) * 100));
+}
+function initScrollbars() {
+  for (const [id, vert] of [["#vbar", true], ["#hbar", false]]) {
+    const bar = $(id), th = bar.firstElementChild;
+    let drag = null, lastSend = 0;
+    const len = () => (vert ? bar.clientHeight : bar.clientWidth);
+    th.onpointerdown = e => { e.stopPropagation(); e.preventDefault(); th.setPointerCapture(e.pointerId);
+      drag = { p: vert ? e.clientY : e.clientX, o: vert ? B.sc.y : B.sc.x }; };
+    th.onpointermove = e => {
+      if (!drag || !B.sc) return;
+      const n = performance.now(); if (n - lastSend < 40) return; lastSend = n;
+      const d = ((vert ? e.clientY : e.clientX) - drag.p) / len() * (vert ? B.sc.h : B.sc.w);
+      sendWS({ type: "b_scrollto", [vert ? "y" : "x"]: Math.max(0, drag.o + d) });
+    };
+    th.onpointerup = th.onpointercancel = () => { drag = null; };
+    bar.onpointerdown = e => {                       // click on the track: one page up or down
+      if (e.target !== bar || !B.sc) return;
+      const r = bar.getBoundingClientRect(), at = ((vert ? e.clientY - r.top : e.clientX - r.left) / len());
+      const cur = (vert ? B.sc.y / B.sc.h : B.sc.x / B.sc.w), dir = at > cur ? 1 : -1;
+      sendWS({ type: "b_scrollto", [vert ? "dy" : "dx"]: dir * (vert ? B.sc.vh : B.sc.vw) * 0.9 });
+    };
+  }
+}
 function agentBusy(on) { $("#ban").hidden = !on; }
 function initBrowser() {
+  initScrollbars();
   let last = 0;
   // Touch: a drag scrolls the page, a tap is a click. Mouse and pen are forwarded as they are.
   let touch = null;

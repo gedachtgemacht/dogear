@@ -214,6 +214,7 @@ class Browser:
         self.errors_seen = 0
         self.handoff: asyncio.Future | None = None
         self.overlay_locked = False
+        self._metrics_at = 0.0
         self.cmp_hosts: set[str] = set()
         self.owner, self.owner_ts = "", 0.0      # which branch run currently drives the shared browser
 
@@ -336,11 +337,41 @@ class Browser:
         self.last_frame = {"type": "frame", "d": p["data"], "w": int(p["metadata"].get("deviceWidth", self.vw)),
                            "h": int(p["metadata"].get("deviceHeight", self.vh))}
         now = time.time()
+        if now - self._metrics_at >= 0.25:
+            self._metrics_at = now
+            asyncio.create_task(self._send_metrics())
         if now - self._sent_at >= 0.06:
             self._sent_at = now
             await self._broadcast(self.last_frame)
         elif not self._flush or self._flush.done():
             self._flush = asyncio.create_task(self._flush_frame())
+
+    async def _metrics(self):
+        """Scroll position and content size, so the live view can draw real scrollbars (the headless page hides its own)."""
+        try:
+            m = await self.cdp.call("Page.getLayoutMetrics", session=self.sess)
+            c, v = m.get("cssContentSize") or m["contentSize"], m.get("cssVisualViewport") or m["visualViewport"]
+            return {"type": "b_scroll", "x": round(v.get("pageX", 0)), "y": round(v.get("pageY", 0)),
+                    "w": round(c["width"]), "h": round(c["height"]),
+                    "vw": round(v.get("clientWidth", self.vw)), "vh": round(v.get("clientHeight", self.vh))}
+        except Exception:
+            return None
+
+    async def _send_metrics(self):
+        msg = await self._metrics()
+        if msg:
+            await self._broadcast(msg)
+
+    async def scroll_to(self, x=None, y=None, dx=0, dy=0):
+        """Absolute (x, y) or relative (dx, dy) page scroll, used by the live view's scrollbars and keys."""
+        def num(v):
+            return max(-1e7, min(1e7, float(v)))
+        if x is not None or y is not None:
+            await self.eval(f"window.scrollTo({num(x) if x is not None else 'scrollX'}, {num(y) if y is not None else 'scrollY'})")
+        else:
+            await self.eval(f"window.scrollBy({num(dx)}, {num(dy)})")
+        self._metrics_at = 0
+        await self._send_metrics()
 
     async def _flush_frame(self):
         await asyncio.sleep(0.09)
@@ -366,6 +397,7 @@ class Browser:
         await self._broadcast({"type": "b_nav", "url": self.url, "title": self.title})
 
     async def _on_load(self, p):
+        asyncio.create_task(self._send_metrics())
         await self._title()
         await self._broadcast({"type": "b_nav", "url": self.url, "title": self.title})
         for w in self.waiters:
@@ -433,8 +465,13 @@ class Browser:
 
     async def snapshot(self):
         """Send the current state to a newly attached viewer."""
-        return [{"type": "b_status", "state": self.state}, {"type": "b_nav", "url": self.url, "title": self.title}] + \
-               ([self.last_frame] if self.last_frame else [])
+        out = [{"type": "b_status", "state": self.state}, {"type": "b_nav", "url": self.url, "title": self.title}] + \
+              ([self.last_frame] if self.last_frame else [])
+        if self.alive:
+            sc = await self._metrics()
+            if sc:
+                out.append(sc)
+        return out
 
     # ------------------------------------------------------------ actions
     async def eval(self, expr, timeout=20):
@@ -590,6 +627,17 @@ class Browser:
     async def user_key(self, m):
         if not self.alive:
             return
+        # Page-scroll keys scroll the page unless a text field has focus (headless Chrome does not do this by itself).
+        step = {"PageDown": 0.9, "PageUp": -0.9, "ArrowDown": 0.1, "ArrowUp": -0.1, " ": 0.9, "Home": -1e5, "End": 1e5}.get(m["key"])
+        if step is not None and not m.get("mods", 0) & 0b1110:
+            editable = await self.eval("(()=>{const a=document.activeElement;return !!a&&(a.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))})()")
+            if not editable:
+                if m["kind"] == "down":
+                    if abs(step) > 1:
+                        await self.scroll_to(y=0 if step < 0 else 10 ** 7)
+                    else:
+                        await self.scroll_to(dy=step * self.vh)
+                return
         ev = {"type": "keyDown" if m["kind"] == "down" else "keyUp", "key": m["key"], "code": m.get("code", ""),
               "windowsVirtualKeyCode": m.get("vk", 0), "modifiers": m.get("mods", 0)}
         if m["kind"] == "down" and m.get("text"):

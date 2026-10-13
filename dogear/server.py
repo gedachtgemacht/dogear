@@ -325,6 +325,8 @@ async def ws(sock: WebSocket):
                 await BROWSER.user_key(m)
             elif t == "b_text":
                 await BROWSER.insert(m["text"])
+            elif t == "b_scrollto":
+                await BROWSER.scroll_to(m.get("x"), m.get("y"), m.get("dx", 0), m.get("dy", 0))
         except Exception as e:
             await send({"type": "b_status", "state": "error", "error": str(e)})
 
@@ -513,7 +515,7 @@ async def ws(sock: WebSocket):
                 if not stopped:
                     await send({"type": "done"})        # nothing was running: release the window
             elif t.startswith("b_"):
-                if t in ("b_mouse", "b_key", "b_text", "b_resume"):   # fast, keep ordered
+                if t in ("b_mouse", "b_key", "b_text", "b_resume", "b_scrollto"):   # fast, keep ordered
                     await browser_msg(m, send)
                 else:                                      # may take seconds (launch, navigation)
                     asyncio.create_task(browser_msg(m, send))
