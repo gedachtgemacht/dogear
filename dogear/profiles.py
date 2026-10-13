@@ -22,10 +22,10 @@ OVERRIDES_FILE = DATA / "profiles.json"
 
 # ordered from leanest to fullest; a toolbox is a set of tool names, "*" means everything registered
 TOOLBOXES = {
-    "lean": ("Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep", "Bash", "RunTests", "WebSearch", "WebFetch",
+    "lean": ("Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep", "Bash", "RunTests", "Recall", "WebSearch", "WebFetch",
              "browser_navigate", "browser_read", "browser_click", "browser_type", "browser_key", "browser_screenshot", "browser_console"),
     "standard": ("Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep", "Bash", "BashOutput", "KillBash", "RunTests", "Git",
-                 "Outline", "FindSymbol", "TodoWrite", "AskUser", "Skill", "ViewImage", "WebSearch", "WebFetch",
+                 "Outline", "FindSymbol", "TodoWrite", "AskUser", "Skill", "Remember", "Recall", "SaveSnippet", "ViewImage", "WebSearch", "WebFetch",
                  "browser_navigate", "browser_read", "browser_click", "browser_type", "browser_key", "browser_scroll", "browser_screenshot",
                  "browser_console", "browser_audit", "browser_resize", "browser_wait"),
     "full": ("*",),

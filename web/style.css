@@ -510,3 +510,32 @@ button.undo:hover { border-color: var(--bad); color: var(--bad); }
 .krun .rb button:hover { border-color: var(--accent); color: var(--ink); }
 .adoptcard { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
 .adoptcard code { font: 11.5px var(--mono); color: var(--ink2); }
+
+/* memory */
+.mem-i { border-radius: 4px; } .mem-i:hover { background: var(--panel2); }
+.mem-h { display: flex; align-items: center; gap: 6px; padding: 3px 4px; cursor: pointer; font-size: 12.5px; color: var(--ink2); }
+.mem-h b { font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.mem-h .mini { opacity: 0; } .mem-i:hover .mini { opacity: 1; }
+.mem-k { font: 10.5px var(--mono); text-transform: uppercase; letter-spacing: .04em; color: var(--mute); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; flex: none; }
+.mem-k.snippet { color: var(--accent); } .mem-k.skill { color: var(--ok); }
+.mem-s { font-size: 11px; color: var(--mute); flex: none; }
+.mem-b { margin: 0 4px 6px 4px; padding: 6px 8px; font: 11.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel2); border-radius: 4px; color: var(--ink2); max-height: 220px; overflow: auto; }
+#memform { display: flex; flex-direction: column; gap: 6px; padding: 4px; margin-bottom: 8px; }
+#memform[hidden] { display: none; }
+#memform input, #memform textarea, #memform select { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 5px 7px; font: 12.5px var(--ui); }
+#memform textarea { resize: vertical; font-family: var(--mono); font-size: 12px; }
+#memform button { align-self: flex-start; }
+.mem-row { display: flex; gap: 6px; } .mem-row select { flex: 1; }
+.snip-f { display: inline-flex; gap: 4px; } .snip-f input { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font: 12px var(--ui); width: 150px; }
+.snip-ok { font-size: 12px; color: var(--ok); margin-left: 8px; }
+.suggest { margin: 14px 0 4px; border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.suggest .lbl { font-size: 12px; color: var(--mute); }
+.sg { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: var(--panel); }
+.sg-h { display: flex; gap: 8px; align-items: center; font-size: 13px; } .sg-h b { font-weight: 500; }
+.sg-b { margin-top: 4px; font-size: 13px; color: var(--ink2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.sg-b.code { font: 12px/1.5 var(--mono); }
+.sg-a { display: flex; gap: 6px; margin-top: 8px; }
+.sg-a button { font: 12.5px var(--ui); padding: 3px 10px; border-radius: 4px; border: 1px solid var(--line); background: var(--panel2); color: var(--ink); cursor: pointer; }
+.sg-a button:hover { border-color: var(--accent); } .sg-a .ghost { background: none; color: var(--mute); }
+#memform button { font: 12.5px var(--ui); padding: 3px 12px; border-radius: 4px; border: 1px solid var(--line); background: var(--panel2); color: var(--ink); cursor: pointer; }
+#memform button:hover { border-color: var(--accent); }

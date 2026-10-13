@@ -76,7 +76,7 @@ const rel = p => (S.root && p.startsWith(S.root + "/")) ? p.slice(S.root.length 
 const q = o => Object.entries(o).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
 const api = (path, o) => fetch(`${path}?${q({ root: S.root, ...o })}`).then(r => r.ok ? r.json() : Promise.reject(r.status));
 const KIND = { browser_navigate: "browser", browser_read: "browser", browser_click: "browser", browser_type: "browser", browser_key: "browser",
-  browser_scroll: "browser", browser_screenshot: "browser", browser_console: "browser", browser_eval: "browser", browser_wait: "browser", browser_resize: "browser", browser_audit: "browser", browser_handoff: "browser", WebSearch: "net", Task: "agent", Ultra: "agent", Skill: "read", ViewImage: "read", MultiEdit: "write", Outline: "read", FindSymbol: "read", RunTests: "shell", Git: "shell", AskUser: "read", Read: "read", LS: "read", Glob: "read", Grep: "read", BashOutput: "read", Write: "write", Edit: "write", Bash: "shell", KillBash: "shell", WebFetch: "net", TodoWrite: "todo" };
+  browser_scroll: "browser", browser_screenshot: "browser", browser_console: "browser", browser_eval: "browser", browser_wait: "browser", browser_resize: "browser", browser_audit: "browser", browser_handoff: "browser", WebSearch: "net", Task: "agent", Ultra: "agent", Skill: "read", ViewImage: "read", MultiEdit: "write", Outline: "read", FindSymbol: "read", RunTests: "shell", Git: "shell", AskUser: "read", Read: "read", LS: "read", Glob: "read", Grep: "read", BashOutput: "read", Write: "write", Edit: "write", Bash: "shell", KillBash: "shell", WebFetch: "net", TodoWrite: "todo", Remember: "read", Recall: "read", SaveSnippet: "read", SaveSkill: "read", Forget: "read" };
 const sendWS = o => S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify(o));
 
 /* ============================================================ chat */
@@ -177,7 +177,8 @@ function renderBlocks(t, p) {
       const c = p.code[b.ref - 1]; if (!c) continue;
       const pre = el("pre"), code = el("code"); code.innerHTML = highlight(c.code, EXT[c.lang.toLowerCase()] || "md").join("\n"); pre.append(code);
       const cp = el("button", "copy", "Copy"); cp.onclick = () => navigator.clipboard?.writeText(c.code).then(() => { cp.textContent = "Copied"; setTimeout(() => cp.textContent = "Copy", 1200); });
-      w.append(pre, cp);
+      const sv = el("button", "copy", "Save snippet"); sv.onclick = () => snippetForm(sv, c);
+      w.append(pre, cp, sv);
     }
     box.append(w);
   }
@@ -344,7 +345,7 @@ function closeWS(user = false) {
   if (user) S.wsDismissed = true;
 }
 const wsOpen = () => !$("#work").hidden;
-function drawer(open) { $("#drawer").hidden = !open; $("#menu").classList.toggle("on", open); }
+function drawer(open) { if (open) setTimeout(loadMemory, 0); $("#drawer").hidden = !open; $("#menu").classList.toggle("on", open); }
 
 /* ============================================================ editor */
 const E = { files: {}, tabs: ["@preview"], active: "@preview", playing: null, eyeTimer: 0 };
@@ -569,6 +570,68 @@ function renderHistory(list) {
   }
 }
 
+/* ============================================================ memory */
+const MEM_LABEL = { memory: "note", snippet: "snippet", skill: "skill" };
+async function memSave(item) {
+  const r = await fetch("/api/memory", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...item, session: S.sid }) });
+  if (!r.ok) { note("Not saved: " + ((await r.json().catch(() => ({}))).detail || r.status)); return false; }
+  loadMemory(); return true;
+}
+async function loadMemory() {
+  try {
+    const r = await fetch("/api/memory?id=" + encodeURIComponent(S.sid || "")); if (!r.ok) return;
+    renderMemory((await r.json()).items);
+  } catch { /* offline */ }
+}
+function renderMemory(items) {
+  const box = $("#memlist"); box.innerHTML = ""; $("#mem-count").textContent = items.length ? String(items.length) : "";
+  if (!items.length) { box.append(el("div", "mcp-none", "Nothing saved yet. The agent saves what later sessions need; you can add notes with ＋ or /remember.")); return; }
+  for (const e of items) {
+    const row = el("div", "mem-i"), head = el("div", "mem-h");
+    head.append(el("span", "mem-k " + e.kind, MEM_LABEL[e.kind]), el("b", "", e.name));
+    if (e.scope === "global") head.append(el("span", "mem-s", "all projects"));
+    const x = el("button", "mini", "✕"); x.title = "Delete";
+    x.onclick = async ev => { ev.stopPropagation(); await fetch(`/api/memory?session=${encodeURIComponent(S.sid || "")}&kind=${e.kind}&name=${encodeURIComponent(e.id)}&scope=${e.scope}`, { method: "DELETE" }); loadMemory(); };
+    head.append(x);
+    const body = el("pre", "mem-b", (e.description && e.kind !== "memory" ? e.description + "\n\n" : "") + e.body); body.hidden = true;
+    head.onclick = () => body.hidden = !body.hidden;
+    row.append(head, body); box.append(row);
+  }
+}
+function memForm() {
+  const f = $("#memform"); if (!f.hidden) { f.hidden = true; return; }
+  f.innerHTML = ""; f.hidden = false;
+  const kind = el("select"), name = el("input"), text = el("textarea"), scope = el("select"), trig = el("input"), go = el("button", "", "Save");
+  [["memory", "Note"], ["snippet", "Snippet"], ["skill", "Skill"]].forEach(([v, l]) => kind.append(new Option(l, v)));
+  [["project", "This project"], ["global", "All projects"]].forEach(([v, l]) => scope.append(new Option(l, v)));
+  name.placeholder = "Name"; text.placeholder = "Content"; text.rows = 4; trig.placeholder = "Triggers (comma-separated words)"; trig.hidden = true;
+  kind.onchange = () => { trig.hidden = kind.value !== "skill"; };
+  go.onclick = async () => { if (await memSave({ kind: kind.value, name: name.value, content: text.value, scope: scope.value, triggers: trig.value, description: kind.value === "skill" ? name.value : "" })) f.hidden = true; };
+  const row = el("div", "mem-row"); row.append(kind, scope);
+  f.append(row, name, trig, text, go); name.focus();
+}
+function snippetForm(btn, c) {
+  const w = el("span", "snip-f"), name = el("input"), ok = el("button", "copy", "Save"); name.placeholder = "snippet name"; name.value = "";
+  ok.onclick = async () => { if (!name.value.trim()) return; if (await memSave({ kind: "snippet", name: name.value, content: c.code, language: c.lang || "", description: "", scope: "project" })) { w.replaceWith(el("span", "snip-ok", "Saved")); } };
+  name.onkeydown = e => { if (e.key === "Enter") ok.click(); };
+  w.append(name, ok); btn.replaceWith(w); name.focus();
+}
+function suggestCard(t, items) {
+  t.after.querySelectorAll(".suggest").forEach(n => n.remove());
+  const box = el("div", "suggest"); box.append(el("div", "lbl", "Worth remembering?"));
+  for (const it of items) {
+    const r = el("div", "sg"), h = el("div", "sg-h");
+    h.append(el("span", "mem-k " + it.kind, MEM_LABEL[it.kind]), el("b", "", it.name));
+    const body = el("div", "sg-b"); body.textContent = it.kind === "snippet" ? it.content.split("\n").slice(0, 6).join("\n") : it.content;
+    if (it.kind === "snippet") body.classList.add("code");
+    const save = el("button", "", "Save"), no = el("button", "ghost", "Dismiss");
+    save.onclick = async () => { if (await memSave(it)) { r.remove(); if (!box.querySelector(".sg")) box.remove(); } };
+    no.onclick = () => { r.remove(); if (!box.querySelector(".sg")) box.remove(); };
+    r.append(h, body); const a = el("div", "sg-a"); a.append(save, no); r.append(a); box.append(r);
+  }
+  t.after.append(box);
+}
+
 /* ============================================================ events */
 function handle(m) {
   if (m.type === "frame" || m.type.startsWith("b_")) return browserEvent(m);
@@ -619,6 +682,7 @@ function handle(m) {
       if (m.prefill) { $("#input").value = m.prefill; $("#input").focus(); }
       log.append(el("div", "empty", m.prefill ? "Branched before this message. Edit it and send." : "Branched. This is a copy; the original stays unchanged.")); log.scrollTop = log.scrollHeight; refresh(); break;
     case "mcp": renderMcp(m.servers); break;
+    case "suggest": { const t = S.turns[m.user_idx] || S.turn; if (t) suggestCard(t, m.items); break; }
     case "usage": {
       S.tok += m.out; const pct = m.prompt / m.ctx, i = $("#meter i");
       i.style.width = Math.min(100, pct * 100) + "%"; i.className = pct > .85 ? "hot" : pct > .6 ? "warn" : "";
@@ -650,6 +714,7 @@ function handle(m) {
 }
 
 function renderSession(s) {
+  setTimeout(loadMemory, 0);
   S.sid = s.id; S.root = s.root; $("#root").value = s.root; S.cards = {}; S.queue = []; S.cur = null; S.changed.clear();
   S.meta = { parent: s.parent || null, pins: s.pins || [], titles: s.titles || {}, lineage: s.lineage || s.id, worktree: s.worktree && !s.worktree.removed ? s.worktree : null }; S.ultra = null;
   $("#term").innerHTML = ""; for (const k in T) delete T[k]; termRun(); $("#term-wrap").hidden = true;
@@ -954,7 +1019,7 @@ function setMode(v) { S.mode = v; document.querySelectorAll("#mode button").forE
 
 const SLASHES = [
   ["/new", "start a new session"], ["/ultra", "multi-agent run: review | research | design | audit  <task>"], ["/compact", "condense the conversation to free context (optional focus)"], ["/clear", "clear this session"], ["/mode", "ask | edit | auto"], ["/model", "switch model"],
-  ["/mcp", "reload MCP servers"], ["/init", "write a KERF.md for this project"], ["/help", "list commands"],
+  ["/mcp", "reload MCP servers"], ["/remember", "save a note for future sessions: /remember <text>"], ["/memory", "show saved notes, snippets and skills"], ["/init", "write a KERF.md for this project"], ["/help", "list commands"],
 ];
 function slashMenu(v) {
   const box = $("#slash"), items = v.startsWith("/") && !v.includes(" ") ? SLASHES.filter(s => s[0].startsWith(v)) : [];
@@ -972,6 +1037,9 @@ function command(text) {
     case "/ultra": { const [pat, ...rest] = arg.split(/\s+/); if (!["review", "research", "design", "audit"].includes(pat)) { note("Usage: /ultra review|research|design|audit <task>"); break; }
       return `Use the Ultra tool with pattern "${pat}" for this task: ${rest.join(" ") || "the whole project"}`; }
     case "/compact": if (S.busy) note("Wait for the current run to finish."); else { sendWS({ type: "compact", focus: arg }); note("Condensing the conversation…"); } break;
+    case "/remember": if (!arg) { note("Usage: /remember <what to keep>"); break; }
+      memSave({ kind: "memory", name: arg.split(/\s+/).slice(0, 5).join(" "), content: arg, scope: "project" }).then(ok => ok && note("Saved to project memory.")); break;
+    case "/memory": drawer(true); loadMemory(); break;
     case "/init": return "Explore this project (LS, Glob, Read the key files) and write a concise KERF.md in the project root: what it is, how to run, test and build it, the layout, and the conventions a coding agent must follow.";
     default: note("Commands: " + SLASHES.map(s => s[0]).join("  "));
   }
@@ -1054,7 +1122,7 @@ function connect() {
   });
   $("#root").onchange = () => { S.root = $("#root").value.trim(); sendWS({ type: "root", root: S.root }); S.changed.clear(); E.files = {}; renderTree(); };
   $("#new").onclick = () => !S.busy && sendWS({ type: "new" });
-  $("#refresh").onclick = renderTree; $("#mcp-reload").onclick = () => sendWS({ type: "mcp_reload" });
+  $("#refresh").onclick = renderTree; $("#mcp-reload").onclick = () => sendWS({ type: "mcp_reload" }); $("#mem-add").onclick = memForm;
   initBrowser();
   $("#plan-toggle").onclick = () => { planShow(!S.planOpen, true); if (S.planOpen) renderRail(S.todos); };
   if (store.get("dogear-plan", "") === "1") planShow(true), renderRail(S.todos);

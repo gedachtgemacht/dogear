@@ -17,6 +17,7 @@ from . import browser as br
 from . import checkpoint as cpt
 from . import worktrees as W
 from . import llm, profiles, tools
+from . import memory as mem
 from .brand import NAME
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -156,6 +157,33 @@ async def image(name: str):
     if not _re.fullmatch(r"[0-9a-f]{16}\.jpg", name) or not f.is_file():
         raise HTTPException(404)
     return FileResponse(f, headers={"Cache-Control": "max-age=31536000", "X-Content-Type-Options": "nosniff"})
+
+
+def _mem_root(id: str | None) -> Path:
+    s = A.load(id) if id else None
+    return Path(s["root"]) if s else Path(settings().get("root") or ".")
+
+
+@app.get("/api/memory")
+async def memory_list(id: str = ""):
+    root = _mem_root(id)
+    return {"root": str(root), "items": [mem.public(e) for e in mem.entries(root)]}
+
+
+@app.post("/api/memory")
+async def memory_save(body: dict):
+    try:
+        return mem.apply(_mem_root(body.get("session")), body)
+    except mem.MemoryError_ as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/memory")
+async def memory_delete(session: str, kind: str, name: str, scope: str = ""):
+    try:
+        return mem.delete(_mem_root(session), kind, name, scope or None)
+    except mem.MemoryError_ as e:
+        raise HTTPException(404, str(e))
 
 
 @app.get("/api/branches")
