@@ -955,7 +955,14 @@ function offerDiff(t) {
 
 /* ============================================================ input */
 let spinTimer = 0;
+function stopRun() {
+  const b = $("#stop"); b.disabled = true; b.textContent = "Stopping…";
+  sendWS({ type: "stop", id: S.sid });
+  clearTimeout(stopRun.t);
+  stopRun.t = setTimeout(() => { if (S.busy) { b.disabled = false; b.textContent = "■ Stop"; } }, 8000);   // let the user try again
+}
 function setBusy(b) {
+  if (!b) { const sb = $("#stop"); sb.disabled = false; sb.textContent = "■ Stop"; }
   S.busy = b; document.body.classList.toggle("busy", b); $("#spin").hidden = !b; $("#input").disabled = b;
   clearInterval(spinTimer);
   if (b) { S.t0 = Date.now(); S.tok = 0; const tick = () => { const s = Math.round((Date.now() - S.t0) / 1000);
@@ -1046,7 +1053,7 @@ function connect() {
   document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") || store.get("dogear-theme", "dark");
   $("#theme").onclick = () => { const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = t; store.set("dogear-theme", t); };
   document.querySelectorAll("#mode button").forEach(b => b.onclick = () => setMode(b.dataset.v));
-  $("#composer").onsubmit = submit;
+  $("#composer").onsubmit = submit; $("#stop").onclick = stopRun;
   $("#attach").onclick = () => $("#file").click();
   $("#file").onchange = async e => { for (const f of e.target.files) await addImage(f); e.target.value = ""; };
   $("#input").addEventListener("paste", e => {
@@ -1065,7 +1072,7 @@ function connect() {
   };
   document.addEventListener("keydown", e => {
     if (e.key === "Escape" && !$("#drawer").hidden) drawer(false);
-    else if (e.key === "Escape" && S.busy && document.activeElement !== bov) sendWS({ type: "stop" });
+    else if (e.key === "Escape" && S.busy && document.activeElement !== bov) stopRun();
     else if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); const m = ["ask", "edit", "auto", "plan"]; setMode(m[(m.indexOf(S.mode) + 1) % 4]); }
     else if (S.ask && "123".includes(e.key) && e.key.length === 1 && !(e.target === inp && inp.value)) { e.preventDefault(); S.ask.answer(e.key !== "3", e.key === "2"); }
   });

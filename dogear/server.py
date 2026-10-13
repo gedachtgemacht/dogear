@@ -417,6 +417,7 @@ async def ws(sock: WebSocket):
                 task = asyncio.create_task(
                     ag.turn(m["text"], cfg["model"], bool(cfg["think"]), cfg["mode"], cfg["num_ctx"],
                             bool(cfg.get("review", True)), False, [i for i in m.get("images", []) if isinstance(i, str)][:4]))
+                ag.turn_task = task
             elif t == "approve":
                 for a in AGENTS:              # the approval may belong to a turn started in another window
                     if m["id"] in a.pending:
@@ -498,8 +499,19 @@ async def ws(sock: WebSocket):
                     await send({"type": "compacted", "session": ag.session, "auto": False, **r})
                 except Exception as e:
                     await send({"type": "notice", "text": f"Compact failed: {e}"})
-            elif t == "stop" and busy():
-                task.cancel()
+            elif t == "stop":
+                # a window can stop its own turn and also a turn that another window or a script started (view-only mirror)
+                sid, stopped = m.get("id"), 0
+                if busy() and (not sid or sid == ag.session["id"]):
+                    task.cancel(); stopped += 1
+                for a in list(AGENTS):
+                    tt = getattr(a, "turn_task", None)
+                    if a is not ag and a.running and tt and not tt.done() and (not sid or a.session["id"] == sid):
+                        tt.cancel(); stopped += 1
+                if sid in RUNS and RUNS[sid].task and not RUNS[sid].task.done():
+                    RUNS[sid].task.cancel(); stopped += 1
+                if not stopped:
+                    await send({"type": "done"})        # nothing was running: release the window
             elif t.startswith("b_"):
                 if t in ("b_mouse", "b_key", "b_text", "b_resume"):   # fast, keep ordered
                     await browser_msg(m, send)
