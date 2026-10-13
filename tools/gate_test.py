@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dogear.browser import Browser
 from dogear.audit import AUDIT_JS, format_report
 
-ROOT = Path("/home/user/dogear/werkstatt/gate")
+ROOT = Path("/home/user/dogear/projects/gate")
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Demo</title>
 <style>body{margin:0;padding:24px;font:16px system-ui;background:#fff;color:#222}.note{color:#c4c4c4;font-size:11px}
 .pad{display:grid;grid-template-columns:repeat(4,72px);grid-template-rows:repeat(3,56px);gap:8px;margin:16px 0}

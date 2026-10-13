@@ -2,7 +2,7 @@
 import asyncio, json, shutil, sys, time, urllib.request
 from pathlib import Path
 import websockets
-ROOT = Path("/home/user/dogear/werkstatt/variants")
+ROOT = Path("/home/user/dogear/projects/variants")
 URL, ORIGIN = "ws://127.0.0.1:7870/ws", "http://127.0.0.1:7870"
 PAGE = "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Demo</title><style>button{background:#ccc;padding:8px 14px}</style></head><body><h1>Demo</h1><button id='go'>Go</button></body></html>\n"
 

@@ -3,7 +3,7 @@ usage: uv run python tools/smoke_tools.py [ultra]"""
 import asyncio, json, shutil, subprocess, sys, time
 from pathlib import Path
 import websockets
-ROOT = Path("/home/user/dogear/werkstatt/tools-smoke")
+ROOT = Path("/home/user/dogear/projects/tools-smoke")
 URL, ORIGIN = "ws://127.0.0.1:7870/ws", "http://127.0.0.1:7870"
 
 async def run(prompt, mode="auto", select=None, ask_log=None, timeout=420):

@@ -300,7 +300,7 @@
   "model": "qwen3.8:latest",
   "task": "cli_feature",
   "score": 0.5,
-  "note": "json ok, plain Traceback (most recent call last):\n  File \"/home/user/dogear/werkstatt/bench/qwen3.8_latest/cli_feature/wc.py\", line 33, in <module>\n    main(sys.argv[1:])\n  File \"/home/user/dogear/werkstatt/bench/qwen3.8_latest/cli_feature/wc.py\", line 28, in main\n    for word, n in counts:\n        ^^^^^^^\nValueError: too many values to unpack (expected 2)",
+  "note": "json ok, plain Traceback (most recent call last):\n  File \"/home/user/dogear/projects/bench/qwen3.8_latest/cli_feature/wc.py\", line 33, in <module>\n    main(sys.argv[1:])\n  File \"/home/user/dogear/projects/bench/qwen3.8_latest/cli_feature/wc.py\", line 28, in main\n    for word, n in counts:\n        ^^^^^^^\nValueError: too many values to unpack (expected 2)",
   "steps": 20,
   "tool_errors": 0,
   "tps": 25.2,

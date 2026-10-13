@@ -1,7 +1,7 @@
 """Smoke test of agent features through a running server. usage: uv run python tools/smoke.py"""
 import asyncio, json, shutil, sys, time, websockets
 from pathlib import Path
-ROOT = Path("/home/user/dogear/werkstatt/smoke")
+ROOT = Path("/home/user/dogear/projects/smoke")
 URL = "ws://127.0.0.1:7870/ws"; ORIGIN = "http://127.0.0.1:7870"
 
 async def run(prompt, mode="auto", answer=None, model="qwen3.6:35b-a3b", review=False, undo=False):

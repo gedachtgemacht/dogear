@@ -59,7 +59,7 @@ def unit():
     shutil.rmtree(root); shutil.rmtree(M.GLOBAL)
 
 async def live():
-    root = Path("/home/user/dogear/werkstatt/memory-live"); shutil.rmtree(root, ignore_errors=True); root.mkdir(parents=True)
+    root = Path("/home/user/dogear/projects/memory-live"); shutil.rmtree(root, ignore_errors=True); root.mkdir(parents=True)
     (root / "slugify.py").write_text('import re\n\n\ndef slugify(text):\n    """Lowercase, ASCII-only, dash-separated."""\n    text = re.sub(r"[^a-z0-9]+", "-", text.lower())\n    return text.strip("-")\n')
     import websockets
     async def run(text, label):

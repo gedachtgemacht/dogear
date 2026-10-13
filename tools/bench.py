@@ -9,7 +9,7 @@ import websockets
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 HERE = Path(__file__).resolve().parent
-BASE = HERE.parent / "werkstatt" / "bench"
+BASE = HERE.parent / "projects" / "bench"
 RESULTS = HERE / os.environ.get("BENCH_OUT", "bench_results.json")
 TASK_FILTER = set(filter(None, os.environ.get("BENCH_TASKS", "").split(",")))
 URL, ORIGIN = "ws://127.0.0.1:7870/ws", "http://127.0.0.1:7870"

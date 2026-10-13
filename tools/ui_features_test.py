@@ -6,7 +6,7 @@ import websockets
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dogear.browser import Browser
 
-ROOT = Path("/home/user/dogear/werkstatt/ui-features")
+ROOT = Path("/home/user/dogear/projects/ui-features")
 URL, ORIGIN = "ws://127.0.0.1:7870/ws", "http://127.0.0.1:7870"
 
 async def turn(ws, text, mode="auto"):
