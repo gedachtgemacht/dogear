@@ -18,7 +18,7 @@ from .brand import NAME
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 SETTINGS = A.DATA / "settings.json"
-DEFAULTS = {"model": "qwen3.6:35b-a3b", "think": False, "mode": "edit", "num_ctx": 32768,
+DEFAULTS = {"model": "qwen3.6:35b-a3b", "think": False, "mode": "edit", "num_ctx": 32768, "review": True,
             "root": str(A.DATA.parent / "werkstatt")}
 OLD_MODES = {"vorsicht": "ask", "werkeln": "edit", "frei": "auto"}
 client: httpx.AsyncClient
@@ -219,7 +219,7 @@ async def ws(sock: WebSocket):
             m = await sock.receive_json()
             t = m.get("type")
             if t == "user" and not busy():
-                cfg.update({k: m[k] for k in ("model", "think", "mode", "root") if k in m})
+                cfg.update({k: m[k] for k in ("model", "think", "mode", "root", "review") if k in m})
                 cfg["num_ctx"] = int(m.get("num_ctx", cfg["num_ctx"]))
                 SETTINGS.write_text(json.dumps(cfg))
                 if not Path(cfg["root"]).is_dir():
@@ -228,7 +228,7 @@ async def ws(sock: WebSocket):
                     continue
                 ag.session["root"] = preview_root["path"] = cfg["root"]
                 task = asyncio.create_task(
-                    ag.turn(m["text"], cfg["model"], bool(cfg["think"]), cfg["mode"], cfg["num_ctx"]))
+                    ag.turn(m["text"], cfg["model"], bool(cfg["think"]), cfg["mode"], cfg["num_ctx"], bool(cfg.get("review", True))))
             elif t == "approve":
                 for a in AGENTS:              # the approval may belong to a turn started in another window
                     if m["id"] in a.pending:

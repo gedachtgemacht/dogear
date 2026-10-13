@@ -1,0 +1,9 @@
+Polish the calculator UI in index.html (and calc.js only if needed). Do not change the parser behavior; the Python tests and `node test_calc.js` must keep passing.
+
+1. The keypad has min and max but no parentheses and no comma, so it cannot build a full expression. Add ( ) and , keys plus a backspace key. Keep the = key prominent.
+2. The result must be its own large, clearly separated area: the expression input on top (smaller), the live result below it (large, tabular numbers). Errors appear in that same area in the danger color with the message.
+3. Remove the made-up "v2.0" badge and anything else that is not real content.
+4. Support a proper dark theme and a light theme, both with sufficient contrast. Default follows prefers-color-scheme; add a small theme toggle that sets data-theme on <html> and is remembered in localStorage.
+5. History: each entry shows expression and result; clicking an entry puts the expression back into the input.
+
+Verify with screenshots at 1280x800 and at 390x844 in BOTH themes (use your toggle), fix what you find, run both test suites, then give a short report with your assumptions.

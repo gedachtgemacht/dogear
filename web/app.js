@@ -542,6 +542,7 @@ function handle(m) {
     case "present": { const t = S.turns[m.user_idx] || S.turn; if (t) { if (!t.raw && t.answer.textContent) t.raw = t.answer.textContent; renderBlocks(t, m); } break; }
     case "done": if (S.cur && S.turn) S.turn.raw = S.curText; setBusy(false); agentBusy(false); refresh(); if (S.follow && S.webTouched) openWS("@preview", true); S.webTouched = false; break;
     case "session": renderSession(m.session); break;
+    case "review_start": if (S.cur) { S.cur.classList.add("narr"); workAdd(S.cur); S.cur = null; S.curText = ""; } turn().after.querySelectorAll(".follow-ups").forEach(n => n.remove()); break;
     case "turn_start": if (!S.busy) { renderSession(m.session); setBusy(true); } break;   // a run started in another window
   }
   keep();
@@ -552,7 +553,7 @@ function renderSession(s) {
   $("#term").innerHTML = ""; for (const k in T) delete T[k]; termRun(); $("#term-wrap").hidden = true;
   log.innerHTML = ""; S.turns = []; S.turn = null; if (!s.messages.length) emptyState();
   for (const m of s.messages) {
-    if (m.role === "user") newTurn(m.content);
+    if (m.role === "user") { if (!m.review) newTurn(m.content); }
     else if (m.role === "assistant") {
       const t = turn(), calls = m.tool_calls || [];
       if (m.content && calls.length) { const n = el("div", "md narr"); n.innerHTML = md(m.content); workAdd(n); }
@@ -620,7 +621,7 @@ function submit(e) {
   S.hist.push(t); S.hi = S.hist.length; $("#input").value = ""; $("#input").style.height = ""; slashMenu("");
   if (t.startsWith("/")) { t = command(t); if (!t) return; }
   newTurn(t); setBusy(true);
-  sendWS({ type: "user", text: t, model: $("#model").value, think: $("#think").checked, mode: S.mode, root: $("#root").value.trim(), num_ctx: +$("#ctx").value });
+  sendWS({ type: "user", text: t, model: $("#model").value, think: $("#think").checked, review: $("#review").checked, mode: S.mode, root: $("#root").value.trim(), num_ctx: +$("#ctx").value });
   S.root = $("#root").value.trim(); log.scrollTop = log.scrollHeight;
 }
 
@@ -631,7 +632,7 @@ async function refresh() {
   if (S.st.name) { document.title = S.st.name; $(".brand span").textContent = S.st.name; }
   if (!sel.options.length) {
     for (const m of models.includes(c.model) ? models : [c.model, ...models]) sel.append(new Option(m, m));
-    sel.value = c.model; $("#think").checked = c.think; $("#ctx").value = String(c.num_ctx); $("#root").value = S.root = c.root; setMode(c.mode);
+    sel.value = c.model; $("#think").checked = c.think; $("#review").checked = c.review !== false; $("#ctx").value = String(c.num_ctx); $("#root").value = S.root = c.root; setMode(c.mode);
   }
   renderHistory(sessions);
 }

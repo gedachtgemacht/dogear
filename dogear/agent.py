@@ -109,6 +109,16 @@ def _sources(name: str, args: dict, result: str) -> list[dict]:
     return [o for o in out if "127.0.0.1" not in o["url"] and "localhost" not in o["url"]]
 
 
+REVIEW_PROMPT = """Review pass. Check your actual result against the original request below, point by point.
+Look at the real artifacts: run the tests, open the page and look at screenshots at desktop and at phone width, read the changed files.
+List concrete defects you can observe: wrong behavior, a missing requirement, duplicated or confusing controls, unclear icons, low contrast, leftover debug code.
+Fix the real defects with minimal edits. Do not add features. If everything is fine, say so.
+End with a short report: what you checked, what you fixed, what remains, and your assumptions.
+
+Original request:
+{task}"""
+
+
 def _approx_tokens(msgs) -> int:
     return sum(len(m.get("content") or "") + len(json.dumps(m.get("tool_calls") or "")) for m in msgs) // 3
 
@@ -194,12 +204,12 @@ class Agent:
         return False
 
     # -- one user turn ---------------------------------------------------------
-    async def turn(self, text: str, model: str, think: bool, mode: str, num_ctx: int):
+    async def turn(self, text: str, model: str, think: bool, mode: str, num_ctx: int, review_on: bool = False, _review: bool = False):
         s = self.session
         ctx = tools.Ctx(Path(s["root"]), self.send, self.procs, self.browser)
         ctx.todos = s.get("todos", [])
-        s["messages"].append({"role": "user", "content": text})
-        if s["title"] == "New session":
+        s["messages"].append({"role": "user", "content": text, **({"review": True} if _review else {})})
+        if s["title"] == "New session" and not _review:
             s["title"] = text.strip().splitlines()[0][:48]
         save(s)
         self.running = True
@@ -225,8 +235,12 @@ class Agent:
         recent: list[str] = []
         shot = None
         t0, nsteps, final_idx, probes = time.time(), 0, None, 0
-        user_idx = sum(1 for m in s["messages"] if m["role"] == "user") - 1
+        user_idx = sum(1 for m in s["messages"] if m["role"] == "user" and not m.get("review")) - 1
         info = {"sources": [], "changes": {}, "commands": [], "tools": set()}
+        orig_text, cancelled = text, False
+        if _review and getattr(self, "_carry", None):
+            c = self._carry
+            t0, nsteps, info, orig_text = c["t0"], c["nsteps"], c["info"], c["text"]
         try:
             await self.sync_mcp(s["root"])
             specs = tools.SPECS + self.mcp.specs()
@@ -331,13 +345,21 @@ class Agent:
                 s["messages"].append({"role": "assistant", "content": content})
                 final_idx = len(s["messages"]) - 1
         except asyncio.CancelledError:
+            cancelled = True
             await self.send({"type": "notice", "text": "Interrupted."})
             raise
         except Exception as e:
             await self.send({"type": "error", "text": f"{type(e).__name__}: {e}"})
         finally:
-            self.running = False
             s["todos"] = ctx.todos
+            if review_on and not _review and not cancelled and final_idx is not None and info["changes"] and nsteps >= 6:
+                # a second pass that checks the result against the request; it sends summary and done itself
+                self._carry = {"nsteps": nsteps, "t0": t0, "info": info, "text": text}
+                save(s)
+                await self.send({"type": "review_start"})
+                await self.turn(REVIEW_PROMPT.format(task=text[:2000]), model, think, mode, num_ctx, False, True)
+                return
+            self.running = False
             if final_idx is not None:
                 visited = [x for x in info["sources"] if x["kind"] == "visited"]
                 others = [x for x in info["sources"] if x["kind"] != "visited"]
@@ -351,7 +373,7 @@ class Agent:
             await self.send({"type": "done"})
             if final_idx is not None and s["messages"][final_idx].get("content"):
                 hints = ", ".join(sorted(info["tools"])) or "no tools"
-                asyncio.create_task(self._present(s, final_idx, user_idx, text, s["messages"][final_idx]["content"], hints))
+                asyncio.create_task(self._present(s, final_idx, user_idx, orig_text, s["messages"][final_idx]["content"], hints))
 
     async def _present(self, s, idx, user_idx, question, answer, hints):
         res = await pres.present(self.client, question, answer, hints)

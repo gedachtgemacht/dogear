@@ -1,0 +1,6 @@
+Fix two problems in the calculator UI (index.html only; the parser and its tests must stay unchanged and passing).
+
+1. The keypad shows the operators twice: + - × ÷ in one row, and ÷ × - again in the right column of the digit grid. Every operator must appear exactly once. Arrange the keypad so it is logical and compact.
+2. The backspace and the theme toggle use tiny, unclear glyphs. Replace them with clear inline SVG icons (backspace; sun/moon), with accessible labels.
+
+Check the result in both themes at 1280x800 and 390x844.
