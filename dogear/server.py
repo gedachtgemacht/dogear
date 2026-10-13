@@ -1,6 +1,7 @@
 """HTTP + WebSocket + live preview. Binds to 127.0.0.1 only."""
 import asyncio
 import json
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import uvicorn
 from . import agent as A
 from . import browser as br
 from . import checkpoint as cpt
+from . import worktrees as W
 from . import llm, profiles, tools
 from .brand import NAME
 
@@ -25,7 +27,22 @@ OLD_MODES = {"vorsicht": "ask", "werkeln": "edit", "frei": "auto"}
 client: httpx.AsyncClient
 preview_root = {"path": DEFAULTS["root"]}
 BROWSER: br.Browser
-AGENTS: set = set()      # one Agent per open UI connection
+AGENTS: set = set()      # one Agent per open UI connection, plus the background branch runs
+
+
+class Run:
+    """A branch run that works in its own worktree, independent of any browser window."""
+    def __init__(self, sid: str, title: str, agent):
+        self.sid, self.title, self.agent = sid, title, agent
+        self.status, self.last, self.steps, self.task = "running", "starting", 0, None
+
+    def info(self) -> dict:
+        wt = (self.agent.session or {}).get("worktree") or {}
+        return {"id": self.sid, "title": self.title, "status": self.status, "last": self.last, "steps": self.steps,
+                "worktree": bool(wt) and not wt.get("removed")}
+
+
+RUNS: dict[str, Run] = {}
 MIRROR: dict = {}        # connection id -> direct sender; lets a second window watch a running turn
 PREVIEW_URL = f"http://127.0.0.1:{br.PREVIEW_PORT}"
 NOCACHE = {"Cache-Control": "no-store"}
@@ -35,9 +52,8 @@ NOCACHE = {"Cache-Control": "no-store"}
 preview_app = FastAPI()
 
 
-@preview_app.get("/{path:path}")
-async def preview(path: str):
-    ctx = tools.Ctx(Path(preview_root["path"]))
+def _serve(root: str, path: str):
+    ctx = tools.Ctx(Path(root))
     try:
         p = ctx.path(path or ".")
         if path == "favicon.ico" and not p.exists():
@@ -50,6 +66,16 @@ async def preview(path: str):
     except tools.ToolError as e:
         raise HTTPException(400, str(e))
     return FileResponse(p, headers=NOCACHE)
+
+
+@preview_app.get("/@{sid}/{path:path}")
+async def preview_session(sid: str, path: str):
+    return _serve(br.PREVIEW_ROOTS.get(sid) or preview_root["path"], path)
+
+
+@preview_app.get("/{path:path}")
+async def preview(path: str):
+    return _serve(preview_root["path"], path)
 
 
 def settings() -> dict:
@@ -236,6 +262,60 @@ async def ws(sock: WebSocket):
             await send({"type": "b_status", "state": "error", "error": str(e)})
 
     wtask = asyncio.create_task(writer())
+    async def broadcast(msg):
+        for d in list(MIRROR.values()):
+            await d(msg)
+
+    async def start_variants(base: dict, turn: int, where: str, prompts: list[str]):
+        out = []
+        for i, prompt in enumerate([p for p in prompts if p.strip()][:4]):
+            new, restore = A.fork_session(base, turn, where)
+            origin = Path(base["root"])
+            proj, basesha = await asyncio.to_thread(W.create, origin, new["id"], restore["sha"] if restore else None)
+            new["root"] = str(proj)
+            new["worktree"] = {"path": str(proj), "base": basesha, "origin": str(origin)}
+            new["title"] = f"Variant {chr(65 + i)} · {prompt.strip().splitlines()[0]}"[:60]
+            A.save(new)
+            holder = {}
+
+            async def sink(ev, holder=holder):
+                run = holder["run"]
+                t = ev.get("type")
+                if t == "tool":
+                    run.steps += 1
+                    run.last = f"{ev['name']} {ev.get('label', '')}"[:80]
+                elif t == "approval":
+                    run.status, run.last = "waiting", f"waiting for approval: {ev['name']}"
+                elif t == "result" and run.status == "waiting":
+                    run.status = "running"
+                elif t == "notice":
+                    run.last = ev["text"][:80]
+                await broadcast({"type": "run_event", "run": run.sid, "event": ev, "info": run.info()})
+
+            agent = A.Agent(sink, client, BROWSER)
+            agent.session = new
+            run = Run(new["id"], new["title"], agent)
+            run.last = prompt.strip().replace("\n", " ")[:80]
+            holder["run"] = run
+            RUNS[new["id"]] = run
+            AGENTS.add(agent)
+
+            async def drive(run=run, prompt=prompt):
+                try:
+                    await run.agent.turn(prompt, cfg["model"], bool(cfg["think"]), cfg["mode"], cfg["num_ctx"], bool(cfg.get("review", True)), False, None)
+                    run.status = "done"
+                except asyncio.CancelledError:
+                    run.status = "stopped"
+                except Exception as e:
+                    run.status, run.last = "error", str(e)[:80]
+                finally:
+                    AGENTS.discard(run.agent)
+                    await broadcast({"type": "run_status", "info": run.info()})
+
+            run.task = asyncio.create_task(drive())
+            out.append(run.info())
+        return out
+
     async def _titles(agent, send_):
         s = agent.session
         titles = await agent.make_titles(s)
@@ -260,7 +340,8 @@ async def ws(sock: WebSocket):
             if t == "user" and not busy():
                 cfg.update({k: m[k] for k in ("model", "think", "mode", "root", "review") if k in m})
                 cfg["num_ctx"] = int(m.get("num_ctx", cfg["num_ctx"]))
-                SETTINGS.write_text(json.dumps(cfg))
+                if "mozilla" in sock.headers.get("user-agent", "").lower():
+                    SETTINGS.write_text(json.dumps(cfg))
                 if not Path(cfg["root"]).is_dir():
                     await send({"type": "error", "text": f"Project directory does not exist: {cfg['root']}"})
                     await send({"type": "done"})
@@ -283,6 +364,41 @@ async def ws(sock: WebSocket):
                     touched = await asyncio.to_thread(cpt.restore, root, str(m["to"]))
                     await send({"type": "undone", "files": touched})
                     await send({"type": "fs"})
+            elif t == "variants" and not busy():
+                try:
+                    runs = await start_variants(ag.session, int(m.get("turn", 0)), "before" if m.get("where") == "before" else "after",
+                                                [str(x) for x in m.get("prompts", [])])
+                    await broadcast({"type": "runs", "runs": [r.info() for r in RUNS.values()]})
+                except Exception as e:
+                    await send({"type": "notice", "text": f"Cannot start variants: {e}"})
+            elif t == "runs":
+                await send({"type": "runs", "runs": [r.info() for r in RUNS.values()]})
+            elif t == "stop_run":
+                r = RUNS.get(m.get("id", ""))
+                if r and r.task and not r.task.done():
+                    r.task.cancel()
+            elif t == "adopt":
+                s2 = A.load(m.get("id", ""))
+                wt = (s2 or {}).get("worktree")
+                if not wt or wt.get("removed"):
+                    await send({"type": "notice", "text": "That branch has no worktree to adopt."})
+                else:
+                    res = await asyncio.to_thread(W.adopt, Path(wt["origin"]), Path(wt["path"]), wt["base"])
+                    await send({"type": "adopted", "id": s2["id"], **res})
+                    await send({"type": "fs"})
+            elif t == "discard":
+                s2 = A.load(m.get("id", ""))
+                wt = (s2 or {}).get("worktree")
+                if wt and not wt.get("removed"):
+                    r = RUNS.get(s2["id"])
+                    if r and r.task and not r.task.done():
+                        r.task.cancel()
+                    await asyncio.to_thread(W.remove, Path(wt["path"]))
+                    wt["removed"] = True
+                    A.save(s2)
+                    RUNS.pop(s2["id"], None)
+                    await broadcast({"type": "runs", "runs": [r.info() for r in RUNS.values()]})
+                    await send({"type": "notice", "text": "Worktree removed. The conversation of that branch is kept."})
             elif t == "fork" and not busy():
                 try:
                     new, restore = A.fork_session(ag.session, int(m.get("turn", 0)), "before" if m.get("where") == "before" else "after")
@@ -329,6 +445,8 @@ async def ws(sock: WebSocket):
                 asyncio.create_task(ag.sync_mcp(m["root"]))
             elif t == "mcp_reload" and not busy():
                 asyncio.create_task(ag.sync_mcp(cfg["root"]))
+            elif t == "open" and not busy() and RUNS.get(m["id"]) and RUNS[m["id"]].status in ("running", "waiting"):
+                await send({"type": "session", "session": RUNS[m["id"]].agent.session, "live": True})
             elif t == "open" and not busy():
                 s = A.load(m["id"])
                 if s:

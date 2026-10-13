@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import signal
+import time
 import shutil
 from pathlib import Path
 
@@ -414,7 +415,11 @@ def TodoWrite(ctx, todos):
 def _b(ctx):
     if ctx.browser is None:
         raise ToolError("No browser available")
-    return ctx.browser
+    b, who = ctx.browser, getattr(ctx, "run_id", "")
+    if b.owner and b.owner != who and time.time() - b.owner_ts < 60:
+        raise ToolError("The shared browser is being used by another branch run. Wait a minute, or verify without the browser.")
+    b.owner, b.owner_ts = who, time.time()
+    return b
 
 
 def _wrap(fn):

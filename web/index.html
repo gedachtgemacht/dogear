@@ -26,6 +26,9 @@
         <button data-v="plan" title="Read-only: investigates and proposes a plan, changes nothing">Plan</button>
       </div>
       <div class="meter" id="meter" title="Context window usage"><span class="bar-bg"><i></i></span><b>0 / 32k</b></div>
+      <button class="icon" id="plan-toggle" title="Plan board (kanban)" aria-label="Plan board">
+        <svg viewBox="0 0 16 16" width="16" height="16"><rect x="1.75" y="2.25" width="3.5" height="11.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6.25" y="2.25" width="3.5" height="7.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="10.75" y="2.25" width="3.5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+      </button>
       <button class="icon" id="ws-toggle" title="Workspace: browser, editor, terminal" aria-label="Workspace">
         <svg viewBox="0 0 16 16" width="16" height="16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9.5 3v10" stroke="currentColor" stroke-width="1.5"/></svg>
       </button>
@@ -45,7 +48,6 @@
 
   <main class="ide" id="ide">
     <section class="panel chat">
-      <div class="rail" id="rail" hidden></div>
       <div class="branchbar" id="branchbar" hidden></div>
       <button class="outline-btn" id="outline-btn" title="Outline and pinned messages" aria-label="Outline" hidden>
         <svg viewBox="0 0 16 16" width="15" height="15"><path d="M2 3.5h12M2 8h8M2 12.5h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
@@ -105,6 +107,8 @@
       </div>
     </section>
 
+    <aside class="panel plan" id="plan" hidden></aside>
+
     <aside class="panel side drawer" id="drawer" hidden>
       <div class="side-scroll">
         <section><h2>Explorer <button class="mini" id="refresh" title="Refresh">↻</button></h2><div class="tree" id="tree"></div></section>
@@ -119,6 +123,12 @@
   <div class="cmp-box">
     <header><b>Compare branches</b><span id="cmp-meta"></span><select id="cmp-sel" aria-label="Compare with"></select><button id="cmp-x" class="mini" aria-label="Close">✕</button></header>
     <div class="cmp-body" id="cmp-body"></div>
+  </div>
+</div>
+<div class="cmp" id="var" hidden>
+  <div class="cmp-box small">
+    <header><b>Run variants in parallel</b><span>Each variant works in its own copy of the project.</span><button id="var-x" class="mini" aria-label="Close">✕</button></header>
+    <div class="var-body" id="var-body"></div>
   </div>
 </div>
 <script src="/static/app.js"></script>

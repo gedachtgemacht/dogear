@@ -69,7 +69,7 @@ function md(src) {
 }
 
 /* ============================================================ state */
-const S = { meta: { parent: null, pins: [], titles: {}, lineage: null }, todos: [], ultra: null, restore: null, railOpen: false, wsAuto: false, wsDismissed: false, turns: [], turn: null, curWrap: null, ws: null, busy: false, root: "", mode: "edit", cur: null, curText: "", think: null, thinkText: "", cards: {}, queue: [],
+const S = { runs: {}, viewOnly: false, meta: { parent: null, pins: [], titles: {}, lineage: null }, todos: [], ultra: null, restore: null, planOpen: false, wsAuto: false, wsDismissed: false, turns: [], turn: null, curWrap: null, ws: null, busy: false, root: "", mode: "edit", cur: null, curText: "", think: null, thinkText: "", cards: {}, queue: [],
   changed: new Map(), flash: new Set(), openDirs: new Set(), sid: null, ask: null, t0: 0, tok: 0, follow: true, st: null, hist: [], hi: 0, webTouched: false };
 const log = $("#log");
 const rel = p => (S.root && p.startsWith(S.root + "/")) ? p.slice(S.root.length + 1) : p;
@@ -100,6 +100,7 @@ function newTurn(text, imgs = [], mode = S.mode) {
   t.pinBtn = btn("★", "Pin this turn", b => { const on = !S.meta.pins.includes(t.i); sendWS({ type: "pin", turn: t.i, on }); });
   btn("⑂", "Branch from here (keep this turn and everything before)", () => !S.busy && sendWS({ type: "fork", turn: t.i, where: "after" }));
   btn("✎", "Edit this message and branch before it", () => !S.busy && sendWS({ type: "fork", turn: t.i, where: "before" }));
+  btn("⑂⑂", "Run variants of this turn in parallel (own copy of the project each)", () => !S.busy && openVariants(t));
   t.el.append(bar); t.bar = bar;
   S.turns.push(t); S.turn = t; syncPin(t); renderOutline(); return t;
 }
@@ -628,7 +629,17 @@ function handle(m) {
     case "summary": { const t = S.turns[m.user_idx] || S.turn; if (t) { if (S.cur && t === S.turn) t.raw = S.curText; applySummary(t, m); offerDiff(t); } break; }
     case "present": { const t = S.turns[m.user_idx] || S.turn; if (t) { if (!t.raw && t.answer.textContent) t.raw = t.answer.textContent; renderBlocks(t, m); offerDiff(t); } break; }
     case "done": if (S.cur && S.turn) S.turn.raw = S.curText; if (S.turns.length >= 4) sendWS({ type: "titles" }); setBusy(false); agentBusy(false); refresh(); if (S.follow && S.webTouched) openWS("@preview", true); S.webTouched = false; break;
-    case "session": renderSession(m.session); break;
+    case "session": renderSession(m.session); S.viewOnly = !!m.live;
+      if (m.live) { setBusy(true); $("#input").placeholder = "This branch is still running in the background (view only)"; } break;
+    case "runs": S.runs = Object.fromEntries(m.runs.map(r => [r.id, r])); if (m.runs.length && !S.planOpen) planShow(true); renderRail(S.todos); break;
+    case "run_status": S.runs[m.info.id] = { ...(S.runs[m.info.id] || {}), ...m.info }; renderRail(S.todos);
+      if (S.viewOnly && m.info.id === S.sid && m.info.status !== "running" && m.info.status !== "waiting") { S.viewOnly = false; setBusy(false); sendWS({ type: "open", id: S.sid }); } break;
+    case "run_event": { const prev = S.runs[m.run] || {}; S.runs[m.run] = { ...prev, ...m.info, approval: prev.approval };
+      if (m.event.type === "approval") S.runs[m.run].approval = m.event;
+      if (m.event.type === "result" || m.event.type === "done") S.runs[m.run].approval = null;
+      if (m.event.type === "tool" || m.event.type === "approval" || m.event.type === "result") renderRail(S.todos); }
+      if (S.viewOnly && m.run === S.sid) handle(m.event); break;
+    case "adopted": adoptCard(m); break;
     case "review_start": if (S.cur) { S.cur.classList.add("narr"); workAdd(S.cur); S.cur = null; S.curText = ""; } turn().after.querySelectorAll(".follow-ups").forEach(n => n.remove()); break;
     case "compacted": renderSession(m.session);
       log.append(el("div", "empty", `${m.auto ? "Context was nearly full, so " : ""}${m.replaced} messages were condensed: about ${Math.round(m.before / 1000)}k → ${Math.round(m.after / 1000)}k tokens.`));
@@ -640,7 +651,7 @@ function handle(m) {
 
 function renderSession(s) {
   S.sid = s.id; S.root = s.root; $("#root").value = s.root; S.cards = {}; S.queue = []; S.cur = null; S.changed.clear();
-  S.meta = { parent: s.parent || null, pins: s.pins || [], titles: s.titles || {}, lineage: s.lineage || s.id }; S.ultra = null;
+  S.meta = { parent: s.parent || null, pins: s.pins || [], titles: s.titles || {}, lineage: s.lineage || s.id, worktree: s.worktree && !s.worktree.removed ? s.worktree : null }; S.ultra = null;
   $("#term").innerHTML = ""; for (const k in T) delete T[k]; termRun(); $("#term-wrap").hidden = true;
   log.innerHTML = ""; S.turns = []; S.turn = null; if (!s.messages.length) emptyState();
   for (const m of s.messages) {
@@ -690,36 +701,112 @@ function railUltra(m) {
   }
   renderRail(S.todos);
 }
+function planShow(on, user = false) {
+  S.planOpen = on; if (user) store.set("dogear-plan", on ? "1" : "0");
+  $("#plan").hidden = !on; $("#ide").classList.toggle("pl", on); $("#plan-toggle").classList.toggle("on", on);
+}
 function renderRail(items) {
   S.todos = items || [];
-  const r = $("#rail"); r.innerHTML = "";
-  const active = S.todos.length > 0 || !!S.ultra;
-  r.hidden = !active; if (!active) return;
-  r.classList.toggle("open", S.railOpen); r.classList.toggle("hasultra", !!S.ultra);
-  const done = S.todos.filter(t => t.status === "completed").length, now = S.todos.find(t => t.status === "in_progress");
-  const head = el("div", "rhead");
-  const prog = el("div", "rprog"), bar = el("i"); bar.style.width = (S.todos.length ? done / S.todos.length * 100 : 0) + "%"; prog.append(bar);
-  head.append(el("b", "", "Plan"), el("span", "rcount", `${done}/${S.todos.length}`), prog);
-  if (now && !S.railOpen) head.append(el("span", "rnow", now.content));
-  head.append(el("button", "rtog", S.railOpen ? "▾" : "▸"));
-  head.onclick = () => { S.railOpen = !S.railOpen; store.set("dogear-rail", S.railOpen ? "1" : "0"); renderRail(S.todos); };
-  r.append(head);
-  const lanes = el("div", "rlanes");
+  const box = $("#plan"), done = S.todos.filter(t => t.status === "completed").length;
+  $("#plan-toggle").classList.toggle("has", S.todos.length > 0);
+  // the first plan of a session opens the board by itself (unless the user closed it)
+  if (S.todos.length && !S.planOpen && store.get("dogear-plan", "") !== "0") planShow(true);
+  if (!S.planOpen) return;
+  const keepAdd = box.querySelector(".add")?.value || "", hadFocus = document.activeElement === box.querySelector(".add");
+  box.innerHTML = "";
+  const send = list => sendWS({ type: "set_todos", items: list });
+  const head = el("div", "ph");
+  head.append(el("b", "", "Plan"), el("span", "cnt", `${done}/${S.todos.length}`), el("span", "sp"));
+  if (done) { const c = el("button", "", "Clear done"); c.onclick = () => send(S.todos.filter(t => t.status !== "completed")); head.append(c); }
+  const x = el("button", "", "✕"); x.title = "Hide the board"; x.onclick = () => planShow(false, true); head.append(x);
+  const prog = el("div", "pbar"), bar = el("i"); bar.style.width = (S.todos.length ? done / S.todos.length * 100 : 0) + "%"; prog.append(bar);
+  box.append(head, prog);
+  const body = el("div", "pbody");
+  const add = el("input", "add"); add.placeholder = "Add a task…"; add.value = keepAdd;
+  add.onkeydown = e => { if (e.key === "Enter" && add.value.trim()) { send([...S.todos, { content: add.value.trim(), status: "pending" }]); add.value = ""; } };
+  body.append(add);
+  if (!S.todos.length) body.append(el("div", "kempty", "No plan yet. For multi-step work the agent writes one and keeps it current; you can also add tasks here and drag them between columns."));
+  let drag = null;
   for (const [st, name, cls] of LANES) {
-    const lane = el("div", `lane ${cls}`), list = S.todos.map((t, i) => ({ t, i })).filter(x => x.t.status === st);
-    const h = el("h4", ""); h.append(el("span", "", name), el("span", "", String(list.length))); lane.append(h);
+    const lane = el("div", `klane ${cls}`), h = el("h4", ""), list = S.todos.map((t, i) => ({ t, i })).filter(o => o.t.status === st);
+    h.append(el("span", "", name), el("span", "", String(list.length))); lane.append(h);
+    lane.ondragover = e => { e.preventDefault(); lane.classList.add("over"); };
+    lane.ondragleave = () => lane.classList.remove("over");
+    lane.ondrop = e => {
+      e.preventDefault(); lane.classList.remove("over"); if (drag == null) return;
+      const moved = { ...S.todos[drag], status: st }, rest = S.todos.filter((_, k) => k !== drag), before = e.target.closest(".kcard")?.dataset.i;
+      const at = before != null && +before !== drag ? rest.findIndex(o => o === S.todos[+before]) : -1;
+      if (at >= 0) rest.splice(at, 0, moved); else rest.push(moved);
+      send(rest);
+    };
     for (const { t, i } of list) {
-      const c = el("div", "card2", t.content); c.title = "Click to move to the next column";
+      const c = el("div", "kcard"); c.draggable = true; c.dataset.i = i;
+      c.append(el("div", "kt", t.content));
       if (railSeen[t.content] && railSeen[t.content] !== st) c.classList.add("moved");
-      c.onclick = () => { const next = { pending: "in_progress", in_progress: "completed", completed: "pending" }[st];
-        sendWS({ type: "set_todos", items: S.todos.map((x, k) => k === i ? { ...x, status: next } : x) }); };
+      const rm = el("button", "kx", "✕"); rm.title = "Remove"; rm.onclick = () => send(S.todos.filter((_, k) => k !== i)); c.append(rm);
+      const mv = el("div", "kmv"), step = d => { const o = ["pending", "in_progress", "completed"], n = o[Math.max(0, Math.min(2, o.indexOf(st) + d))];
+        send(S.todos.map((x, k) => k === i ? { ...x, status: n } : x)); };
+      if (st !== "pending") { const b = el("button", "", "◀"); b.onclick = () => step(-1); mv.append(b); }
+      if (st !== "completed") { const b = el("button", "", "▶"); b.onclick = () => step(1); mv.append(b); }
+      c.append(mv);
+      c.ondragstart = e => { drag = i; c.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", t.content); };
+      c.ondragend = () => { c.classList.remove("dragging"); drag = null; };
       lane.append(c);
     }
-    lanes.append(lane);
+    body.append(lane);
   }
-  r.append(lanes);
-  if (S.ultra) { const u = S.ultra; r.append(el("div", "rultra", `Ultra · ${u.phase || "starting"} · ${u.running || 0} running · ${u.done || 0} done${u.failed ? ` · ${u.failed} failed` : ""}`)); }
+  const runs = runsSection(); if (runs) { const h = el("div", "klane runs"); h.append(el("h4", "", "Parallel runs")); h.append(runs); body.prepend(h); }
+  if (S.ultra) { const u = S.ultra; body.append(el("div", "kultra", `Ultra · ${u.phase || "starting"} · ${u.running || 0} running · ${u.done || 0} done${u.failed ? ` · ${u.failed} failed` : ""}`)); }
+  box.append(body);
+  if (hadFocus) box.querySelector(".add")?.focus();
   railSeen = Object.fromEntries(S.todos.map(t => [t.content, t.status]));
+}
+
+/* ============================================================ parallel variants */
+function openVariants(t) {
+  const dlg = $("#var"), body = $("#var-body"); dlg.hidden = false; body.innerHTML = "";
+  const rep = el("label", "vopt"), cb = el("input"); cb.type = "checkbox"; cb.checked = true; rep.append(cb, "These are alternatives to this message (branch before it). Uncheck to continue after this turn.");
+  body.append(rep);
+  const areas = [];
+  const addArea = (val = "") => { const l = el("label", "v", `Variant ${String.fromCharCode(65 + areas.length)}`), ta = el("textarea"); ta.value = val;
+    ta.placeholder = areas.length ? "A different direction, e.g. “Do it with a table instead”" : ""; l.append(ta); areas.push(ta); add.before(l); };
+  const row = el("div", "vrow"), add = el("button", "add", "+ Add variant"); add.type = "button";
+  const go = el("button", "go", "Start in parallel"); go.type = "button";
+  add.onclick = () => areas.length < 4 && addArea();
+  go.onclick = () => { const prompts = areas.map(a => a.value.trim()).filter(Boolean); if (prompts.length < 1) return;
+    sendWS({ type: "variants", turn: t.i, where: cb.checked ? "before" : "after", prompts }); dlg.hidden = true; planShow(true); };
+  row.append(add, go); body.append(row); addArea(t.text || ""); addArea();
+  areas[1].focus();
+}
+function adoptCard(m) {
+  const c = el("div", "adoptcard");
+  c.append(el("b", "", `Adopted ${m.applied.length} file${m.applied.length === 1 ? "" : "s"} into the project`));
+  if (m.applied.length) c.append(el("code", "", m.applied.slice(0, 8).join("\n")));
+  if (m.conflicts.length) c.append(el("div", "", `${m.conflicts.length} file${m.conflicts.length === 1 ? "" : "s"} changed in both places and were left alone:`), el("code", "", m.conflicts.slice(0, 8).join("\n")));
+  if (m.undo) { const u = el("button", "difftoggle", "Undo adoption"); u.onclick = () => { sendWS({ type: "undo", root: m.undo.root, to: m.undo.sha }); u.remove(); }; c.append(u); }
+  log.append(c); log.scrollTop = log.scrollHeight;
+}
+function runsSection() {
+  const list = Object.values(S.runs); if (!list.length) return null;
+  const box = el("div", "kruns");
+  for (const r of list) {
+    const c = el("div", `krun ${r.status}`), top = el("div", "rt");
+    top.append(el("span", "dot"), el("span", "rn", r.title)); c.append(top, el("div", "rl", `${r.steps} step${r.steps === 1 ? "" : "s"} · ${r.last || r.status}`));
+    const rb = el("div", "rb"), btn = (txt, fn) => { const b = el("button", "", txt); b.onclick = fn; rb.append(b); };
+    if (r.status === "waiting" && r.approval) {
+      const a = r.approval, what = a.name === "Bash" ? "$ " + (a.args.command || "") : a.name + " " + JSON.stringify(a.args).slice(0, 80);
+      c.append(el("div", "rl", what));
+      btn("Allow", () => { sendWS({ type: "approve", id: a.id, ok: true, always: false, key: a.key || a.name }); r.approval = null; });
+      btn("Always", () => { sendWS({ type: "approve", id: a.id, ok: true, always: true, key: a.key || a.name }); r.approval = null; });
+      btn("Deny", () => { sendWS({ type: "approve", id: a.id, ok: false }); r.approval = null; });
+    }
+    btn("Open", () => !S.busy || S.viewOnly ? sendWS({ type: "open", id: r.id }) : null);
+    if (r.status === "running" || r.status === "waiting") btn("Stop", () => sendWS({ type: "stop_run", id: r.id }));
+    if (r.worktree && r.status !== "running" && r.status !== "waiting") btn("Adopt", () => sendWS({ type: "adopt", id: r.id }));
+    if (r.worktree) btn("Discard", () => sendWS({ type: "discard", id: r.id }));
+    c.append(rb); box.append(c);
+  }
+  return box;
 }
 
 /* ============================================================ outline, pins, branches */
@@ -744,9 +831,13 @@ function renderOutline() {
 }
 function renderBranchBar() {
   const b = $("#branchbar"), p = S.meta.parent; b.hidden = !p; if (!p) return; b.innerHTML = "";
-  b.append(el("span", "", `Branch of “${p.title}” · ${p.where === "before" ? `edited at turn ${p.turn + 1}` : `from turn ${p.turn + 1}`}`));
+  b.append(el("span", "", `Branch of “${p.title}” · ${p.where === "before" ? `edited at turn ${p.turn + 1}` : `from turn ${p.turn + 1}`}${S.meta.worktree ? " · own worktree" : ""}`));
   const add = (txt, fn, title) => { const x = el("button", "", txt); if (title) x.title = title; x.onclick = fn; b.append(x); };
   add("Compare", () => openCompare());
+  if (S.meta.worktree) {
+    add("Adopt into project", () => sendWS({ type: "adopt", id: S.sid }), "Copies the files this branch changed into the original project. Files changed in both places are left alone and listed.");
+    add("Discard worktree", () => sendWS({ type: "discard", id: S.sid }));
+  }
   add("Open original", () => !S.busy && sendWS({ type: "open", id: p.id }));
   if (S.restore) add("Restore this branch's files", () => { sendWS({ type: "undo", root: S.restore.root, to: S.restore.sha }); S.restore = null; renderBranchBar(); }, "Puts the project files back to the state at the branch point (a safety checkpoint is made first)");
 }
@@ -929,7 +1020,7 @@ async function refresh() {
 }
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws`); S.ws = ws;
-  ws.onopen = () => { sendWS({ type: "b_sub" }); const id = new URLSearchParams(location.search).get("session"); if (id && !S.opened) { S.opened = 1; sendWS({ type: "open", id }); } };
+  ws.onopen = () => { sendWS({ type: "b_sub" }); sendWS({ type: "runs" }); const id = new URLSearchParams(location.search).get("session"); if (id && !S.opened) { S.opened = 1; sendWS({ type: "open", id }); } };
   ws.onmessage = ev => handle(JSON.parse(ev.data));
   ws.onclose = () => { setBusy(false); setTimeout(connect, 1500); };
 }
@@ -965,10 +1056,13 @@ function connect() {
   $("#new").onclick = () => !S.busy && sendWS({ type: "new" });
   $("#refresh").onclick = renderTree; $("#mcp-reload").onclick = () => sendWS({ type: "mcp_reload" });
   initBrowser();
-  S.railOpen = store.get("dogear-rail", "0") === "1";
+  $("#plan-toggle").onclick = () => { planShow(!S.planOpen, true); if (S.planOpen) renderRail(S.todos); };
+  if (store.get("dogear-plan", "") === "1") planShow(true), renderRail(S.todos);
   $("#outline-btn").onclick = e => { e.stopPropagation(); const b = $("#outline"); b.hidden = !b.hidden; $("#outline-btn").classList.toggle("on", !b.hidden);
     if (!b.hidden) { renderOutline(); sendWS({ type: "titles" }); b.querySelector("input")?.focus(); } };
   $("#cmp-x").onclick = () => { $("#cmp").hidden = true; };
+  $("#var-x").onclick = () => { $("#var").hidden = true; };
+  $("#var").addEventListener("pointerdown", e => { if (e.target === $("#var")) $("#var").hidden = true; });
   $("#cmp").addEventListener("pointerdown", e => { if (e.target === $("#cmp")) $("#cmp").hidden = true; });
   $("#menu").onclick = e => { e.stopPropagation(); drawer($("#drawer").hidden); };
   $("#ws-toggle").onclick = () => wsOpen() ? closeWS(true) : (S.wsDismissed = false, openWS(null, false));

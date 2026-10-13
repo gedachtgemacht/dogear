@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from websockets.asyncio.client import connect
 
 PREVIEW_PORT = 7871
+PREVIEW_ROOTS: dict[str, str] = {}      # session id -> project directory served at /@<id>/
 
 
 class BrowserError(Exception):
@@ -187,6 +188,7 @@ class Browser:
         self.state = "stopped"
         self.errors_seen = 0
         self.handoff: asyncio.Future | None = None
+        self.owner, self.owner_ts = "", 0.0      # which branch run currently drives the shared browser
 
     # ------------------------------------------------------------ lifecycle
     @property

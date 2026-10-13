@@ -556,7 +556,9 @@ class Agent:
             drop += ["Task tool", "Skill tool"]
         if drop:
             sys_tpl = "\n".join(l for l in SYSTEM.split("\n") if not any(d in l for d in drop))
-        system = sys_tpl.format(name=NAME, preview=f"http://127.0.0.1:{br.PREVIEW_PORT}", root=ctx.root, platform=platform.system(), today=date.today().isoformat(),
+        br.PREVIEW_ROOTS[s["id"]] = str(ctx.root)
+        ctx.run_id = s["id"]
+        system = sys_tpl.format(name=NAME, preview=f"http://127.0.0.1:{br.PREVIEW_PORT}/@{s['id']}", root=ctx.root, platform=platform.system(), today=date.today().isoformat(),
                                extra=extra + browser_hint + skills, tree=tools.LS(ctx, ".", 1))
         recent: list[str] = []
         shot = None
@@ -822,7 +824,7 @@ class Agent:
         old = (b.vw, b.vh)
         try:
             await b.ensure()
-            await b.navigate(f"http://127.0.0.1:{br.PREVIEW_PORT}/{page}")
+            await b.navigate(f"http://127.0.0.1:{br.PREVIEW_PORT}/@{self.session['id']}/{page}")
             if await b.eval("document.body && document.body.innerText.includes('Nothing here yet')"):
                 return ""
             results = []
