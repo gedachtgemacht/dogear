@@ -1,0 +1,156 @@
+[
+ {
+  "model": "qwen3.6:35b-a3b",
+  "task": "fizzbuzz",
+  "score": 1.0,
+  "note": "ok",
+  "steps": 2,
+  "tool_errors": 0,
+  "tps": 69.0,
+  "error": "",
+  "secs": 13
+ },
+ {
+  "model": "qwen3.6:35b-a3b",
+  "task": "fix_median",
+  "score": 1.0,
+  "note": "ok",
+  "steps": 7,
+  "tool_errors": 0,
+  "tps": 69.4,
+  "error": "",
+  "secs": 24
+ },
+ {
+  "model": "qwen3.6:35b-a3b",
+  "task": "todo_collect",
+  "score": 1.0,
+  "note": "6/6 found, 0 wrong",
+  "steps": 5,
+  "tool_errors": 0,
+  "tps": 68.5,
+  "error": "",
+  "secs": 19
+ },
+ {
+  "model": "qwen3.6:35b-a3b",
+  "task": "kv_cli",
+  "score": 1.0,
+  "note": "8/8 commands right",
+  "steps": 11,
+  "tool_errors": 0,
+  "tps": 69.0,
+  "error": "",
+  "secs": 37
+ },
+ {
+  "model": "qwen3.6:35b-a3b",
+  "task": "web_counter",
+  "score": 1.0,
+  "note": "ok",
+  "steps": 12,
+  "tool_errors": 0,
+  "tps": 70.7,
+  "error": "",
+  "secs": 49
+ },
+ {
+  "model": "qwen3.6:35b-a3b",
+  "task": "rename_func",
+  "score": 1.0,
+  "note": "ok",
+  "steps": 16,
+  "tool_errors": 1,
+  "tps": 69.7,
+  "error": "",
+  "secs": 30
+ },
+ {
+  "model": "qwen3.6:35b-a3b",
+  "task": "cli_feature",
+  "score": 1.0,
+  "note": "ok",
+  "steps": 5,
+  "tool_errors": 0,
+  "tps": 68.1,
+  "error": "",
+  "secs": 22
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "fizzbuzz",
+  "score": 1.0,
+  "note": "ok",
+  "steps": 9,
+  "tool_errors": 1,
+  "tps": 48.8,
+  "error": "",
+  "secs": 40
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "fix_median",
+  "score": 0.0,
+  "note": "AssertionError",
+  "steps": 0,
+  "tool_errors": 0,
+  "tps": 50.1,
+  "error": "",
+  "secs": 10
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "todo_collect",
+  "score": 0.3333333333333333,
+  "note": "6/6 found, 4 wrong",
+  "steps": 5,
+  "tool_errors": 0,
+  "tps": 48.7,
+  "error": "",
+  "secs": 22
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "kv_cli",
+  "score": 0.0,
+  "note": "kv.py missing",
+  "steps": 0,
+  "tool_errors": 0,
+  "tps": 49.1,
+  "error": "",
+  "secs": 6
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "web_counter",
+  "score": 1.0,
+  "note": "ok",
+  "steps": 4,
+  "tool_errors": 0,
+  "tps": 48.1,
+  "error": "",
+  "secs": 61
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "rename_func",
+  "score": 0.0,
+  "note": "left in ['./shop/pricing.py', './shop/cart.py', './tests/test_pricing.py'], tests ok, uses=0",
+  "steps": 0,
+  "tool_errors": 0,
+  "tps": 0,
+  "error": "LLMError: {\"error\":\"EOF\"}",
+  "secs": 9
+ },
+ {
+  "model": "qwen3.5:4b",
+  "task": "cli_feature",
+  "score": 0.5,
+  "note": "json {\"the\": 4, \"cat\": 1, \"and\": 2, \"dog\": 1, \"bird\": 1, plain ok",
+  "steps": 10,
+  "tool_errors": 5,
+  "tps": 48.7,
+  "error": "",
+  "secs": 27
+ }
+]

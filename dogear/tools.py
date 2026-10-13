@@ -89,7 +89,7 @@ class Ctx:
         self.procs = procs
         self.browser = browser
         self.image = None  # base64 screenshot to show the model on the next step
-        self.subagent = self.skill = self.ask_user = None   # wired by the agent
+        self.subagent = self.skill = self.ask_user = self.ultra = None   # wired by the agent
         self.todos: list[dict] = []
         self.call_id = ""
         self.meta: dict = {}
@@ -205,7 +205,16 @@ def LS(ctx, path=".", depth=2):
 
 def Glob(ctx, pattern, path="."):
     root = ctx.path(path)
-    hits = [f for f in root.glob(pattern) if f.is_file() and not set(f.relative_to(ctx.root).parts) & SKIP_DIRS]
+    if ".." in Path(pattern).parts or os.path.isabs(pattern):
+        raise ToolError("Glob patterns must be relative to the project and may not contain '..'")
+    hits = []
+    for f in root.glob(pattern):
+        try:
+            rel = f.resolve().relative_to(ctx.root)      # also drops symlinks that lead outside the project
+        except ValueError:
+            continue
+        if f.is_file() and not set(rel.parts) & SKIP_DIRS:
+            hits.append(f)
     hits.sort(key=lambda f: -f.stat().st_mtime)
     ctx.meta = {"files": len(hits)}
     return "\n".join(ctx.rel(f) for f in hits[:100]) or "No files matched"
@@ -356,10 +365,31 @@ def Skill(ctx, name):
     return ctx.skill(name)
 
 
-async def AskUser(ctx, question, options=None):
+async def AskUser(ctx, questions=None, question="", options=None, header="", multi=False):
+    """Structured multiple choice. `questions` is a list of {question, header?, options:[str|{label,description?,preview?}], multi?}.
+    A single question may also be given with the flat arguments (question, options, multi)."""
     if not ctx.ask_user:
         raise ToolError("Cannot ask the user here")
-    return await ctx.ask_user(question, [str(o) for o in (options or [])][:5])
+    if isinstance(questions, dict):
+        questions = [questions]
+    if not questions and question:
+        questions = [{"question": question, "options": options or [], "header": header, "multi": multi}]
+    if not isinstance(questions, list) or not questions:
+        raise ToolError("Give at least one question: AskUser(question=..., options=[...]) or questions=[{question, options}]")
+    norm = []
+    for q in questions[:4]:
+        if isinstance(q, str):
+            q = {"question": q}
+        if not isinstance(q, dict) or not str(q.get("question", "")).strip():
+            raise ToolError("every question needs a non-empty 'question' text")
+        opts = []
+        for o in (q.get("options") or [])[:5]:
+            if isinstance(o, dict) and o.get("label"):
+                opts.append({"label": str(o["label"])[:80], "description": str(o.get("description", ""))[:200], "preview": str(o.get("preview", ""))[:600]})
+            elif isinstance(o, (str, int, float)):
+                opts.append({"label": str(o)[:80], "description": "", "preview": ""})
+        norm.append({"question": str(q["question"])[:300], "header": str(q.get("header", ""))[:20], "options": opts, "multi": bool(q.get("multi"))})
+    return await ctx.ask_user(norm)
 
 
 def TodoWrite(ctx, todos):
@@ -597,9 +627,16 @@ TOOLS = {
         {"file_path": _p(S, "path to the image")}, ["file_path"])),
     "Skill": ("read", Skill, _spec("Skill", "Load a skill: written guidance for a kind of task (see the skill list in the system prompt). "
         "Load the matching skill before you start such a task.", {"name": _p(S, "skill name")}, ["name"])),
-    "AskUser": ("read", AskUser, _spec("AskUser", "Ask the user to decide between 2-5 options when the choice is theirs and a wrong guess would be costly. "
-        "Do not use it for things you can reasonably decide yourself.",
-        {"question": _p(S, "one clear question"), "options": {"type": "array", "items": S, "description": "short option labels"}}, ["question"])),
+    "AskUser": ("read", AskUser, _spec("AskUser", "Ask the user to decide when the choice is theirs and a wrong guess would be costly. "
+        "Use multiple choice: 2-5 options per question with a short label and a one-line description of the consequence; put your recommended option first and say so in its description. "
+        "Ask up to 4 related questions in one call. Set multi=true when several options may be chosen. The user can always type another answer. "
+        "Do not ask what you can read from the files or reasonably decide yourself.",
+        {"questions": {"type": "array", "description": "1-4 questions", "items": {"type": "object", "properties": {
+            "question": S, "header": {"type": "string", "description": "short tag, max 20 chars"},
+            "options": {"type": "array", "items": {"type": "object", "properties": {"label": S, "description": S, "preview": {"type": "string", "description": "optional snippet or mockup shown when selected"}}, "required": ["label"]}},
+            "multi": B}, "required": ["question", "options"]}},
+         "question": {"type": "string", "description": "single question shortcut (instead of questions)"},
+         "options": {"type": "array", "items": S, "description": "options for the single question shortcut"}}, [])),
     "TodoWrite": ("read", TodoWrite, _spec("TodoWrite", "Create or update the visible task list. Use it first for any task with several steps; keep exactly one item in_progress.",
         {"todos": {"type": "array", "description": "the complete list", "items": {"type": "object", "properties": {
             "content": S, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}}, "required": ["content", "status"]}}}, ["todos"])),
@@ -659,7 +696,8 @@ def shell_is_safe(cmd: str) -> bool:
 def label(name: str, args: dict) -> str:
     key = {"Read": "file_path", "Write": "file_path", "Edit": "file_path", "LS": "path", "Glob": "pattern",
            "Grep": "pattern", "Bash": "command", "WebFetch": "url", "BashOutput": "shell_id", "KillBash": "shell_id",
-           "WebSearch": "query", "Task": "description", "Skill": "name", "ViewImage": "file_path", "AskUser": "question", "browser_handoff": "reason", "browser_navigate": "url", "browser_click": "ref", "browser_type": "text", "browser_key": "key", "browser_eval": "expression"}.get(name)
+           "WebSearch": "query", "Task": "description", "Skill": "name", "ViewImage": "file_path", "AskUser": "question", "MultiEdit": "file_path", "Outline": "file_path",
+           "FindSymbol": "name", "RunTests": "command", "Git": "action", "Ultra": "pattern", "browser_handoff": "reason", "browser_navigate": "url", "browser_click": "ref", "browser_type": "text", "browser_key": "key", "browser_eval": "expression"}.get(name)
     if name == "LS" and not args.get("path"):
         return "."
     if not key:  # MCP and unknown tools: show the first argument value

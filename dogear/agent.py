@@ -16,9 +16,19 @@ import httpx
 from . import browser as br, llm, tools
 from . import present as pres
 from . import checkpoint as cp
+from . import profiles
 from .audit import AUDIT_JS, format_report
+from . import devtools_code, devtools_run
+from .devtools_run import READ_ACTIONS as GIT_READ
+from . import ultra as _ultra_mod
+from .ultra import Ultra
 from .brand import NAME
 from .mcp import MCP, MCPError
+
+# Optional tool modules import dogear.tools, so they are registered here, not inside tools.py.
+for _m in (devtools_code, devtools_run, _ultra_mod):
+    tools.TOOLS.update(_m.TOOLS)
+tools.SPECS[:] = [t[2] for t in tools.TOOLS.values()]
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 SESSIONS = DATA / "sessions"
@@ -26,8 +36,9 @@ IMAGES = DATA / "images"
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_STEPS = 80
 MODES = ("ask", "edit", "auto", "plan")
-READONLY_AGENT = ("Read", "LS", "Glob", "Grep", "WebSearch", "WebFetch")
+READONLY_AGENT = ("Read", "LS", "Glob", "Grep", "WebSearch", "WebFetch", "Outline", "FindSymbol")
 HELPER_MODEL = "qwen3.5:4b"
+
 INSTRUCTION_FILES = (f"{NAME.upper()}.md", "KERF.md", "FALZ.md", "CLAUDE.md", "AGENTS.md")
 
 SYSTEM = """You are {name}, a coding agent running locally on the user's machine, inside a terminal-style IDE.
@@ -36,10 +47,10 @@ Platform: {platform}. Today: {today}.
 
 How you work:
 - Create and change files with Write and Edit; never paste a file's contents into your answer instead of writing it. Use the exact parameter names from the tool descriptions.
-- Explore before you change: LS, Glob, Grep, Read. Never guess what a file contains.
+- Explore before you change: LS, Glob, Grep, Read. For big files use Outline first, and FindSymbol to locate definitions and usages. Never guess what a file contains.
 - Make small changes with Edit. Use Write only for new files or full rewrites.
 - For anything with more than two steps, call TodoWrite first and keep it current. Exactly one item in_progress.
-- Verify your work: run the tests, the linter or the program with Bash. If it fails, fix it. Do not claim success without running it.
+- Verify your work: run the tests with RunTests (it detects the framework and returns a compact summary), or the program with Bash. If it fails, fix it. Do not claim success without running it.
 - Never install packages globally or into another tool's environment. For Python use a project virtualenv (python3 -m venv .venv) or `uv run --with <pkg> ...`; for Node use the project's node_modules.
 - If the request left something ambiguous and you picked an interpretation, say so in your final summary under "Assumptions" (one line each), especially for semantics a user could reasonably expect differently.
 - Dev servers and watchers need Bash with background=true; their output streams to the user's terminal panel.
@@ -69,7 +80,8 @@ def load_skills(text: str, root: Path) -> tuple[str, list[str]]:
         meta = dict(l.split(":", 1) for l in m.group(1).splitlines() if ":" in l)
         trig = [t.strip().lower() for t in meta.get("triggers", "").split(",") if t.strip()]
         low = text.lower()
-        hits = sum(1 for t in trig if re.search(r"(?<![a-zäöü])" + re.escape(t) + r"(?![a-zäöü])", low))
+        matched = [t for t in trig if re.search(r"(?<![a-zäöü])" + re.escape(t) + r"(?![a-zäöü])", low)]
+        hits = sum(1 for t in matched if not any(t != u and t in u for u in matched))   # "review" inside "code review" counts once
         if hits:
             found.append((hits, m.group(2).strip(), meta.get("name", f.stem).strip()))
     for _, body, name in sorted(found, key=lambda x: -x[0])[:3]:     # at most three skills per task
@@ -294,18 +306,32 @@ class Agent:
             f.set_result(ok)
 
     # -- tools that need the agent itself --------------------------------------
-    async def _ask_user(self, cid: str, question: str, options: list[str]) -> str:
+    async def _ask_user(self, cid: str, questions: list[dict]) -> str:
         fut = asyncio.get_running_loop().create_future()
         self.asks[cid] = fut
-        await self.send({"type": "ask", "id": cid, "question": question, "options": options})
+        await self.send({"type": "ask", "id": cid, "questions": questions})
         try:
-            return await fut
+            value = await fut
         finally:
             self.asks.pop(cid, None)
+        lines = []
+        answers = value if isinstance(value, list) else [{"selected": [], "other": str(value)}]
+        for i, q in enumerate(questions):
+            a = answers[i] if i < len(answers) and isinstance(answers[i], dict) else {"selected": [], "other": ""}
+            parts = [str(x) for x in a.get("selected", [])] + ([str(a.get("other")).strip()] if str(a.get("other", "")).strip() else [])
+            lines.append(f"{q.get('header') or q['question']}: {', '.join(parts) or '(no answer)'}")
+        return "\n".join(lines)
 
-    def answer_ask(self, cid: str, value: str):
+    def answer_ask(self, cid: str, value):
         if (f := self.asks.get(cid)) and not f.done():
             f.set_result(value)
+
+    async def _ultra(self, ctx: "tools.Ctx", model: str, num_ctx: int, pattern: str, task: str, scope: str) -> dict:
+        call = ctx.call_id
+        helper = await profiles.pick_helper(self.client, avoid=model) or model
+        runner = Ultra(self.client, model, ctx.root, emit=lambda ev: self.send({**ev, "call": call}),
+                       helper_model=helper, concurrency=3, num_ctx=min(num_ctx, 32768))
+        return await runner.run(pattern, task, scope)
 
     @staticmethod
     def _skill(name: str, root: Path) -> str:
@@ -317,7 +343,7 @@ class Agent:
 
     async def _subagent(self, parent: "tools.Ctx", description: str, prompt: str, fast: bool, model: str, num_ctx: int) -> str:
         """A fresh-context, read-only agent loop. Returns its final report."""
-        use = HELPER_MODEL if fast else model
+        use = (await profiles.pick_helper(self.client, avoid=model) or HELPER_MODEL) if fast else model
         sub_ctx = tools.Ctx(parent.root, None, None, None)
         specs = [tools.TOOLS[n][2] for n in READONLY_AGENT]
         system = ("You are a research sub-agent. Investigate the task using the tools, then reply with a concise, factual report: "
@@ -379,6 +405,14 @@ class Agent:
             if name == "browser_eval":
                 return True
             return name in ("browser_click", "browser_type", "browser_key") and mode == "ask"
+        if name == "Git":
+            return args.get("action") not in GIT_READ
+        if name == "RunTests":
+            cmd = (args.get("command") or "").strip()
+            if mode == "ask":
+                return True
+            return bool(cmd) and not (re.match(r"^(python3?\s+-m\s+(pytest|unittest)|pytest|npm\s+(run\s+)?test|node\s+--test|go\s+test|cargo\s+test)\b", cmd)
+                                      and not re.search(r"[;&|<>`$]", cmd))
         if kind == "shell":
             return not (name == "Bash" and mode == "edit" and tools.shell_is_safe(args.get("command", "")))
         if kind == "write":
@@ -419,7 +453,8 @@ class Agent:
                 await self.send({"type": "notice", "text": f"Could not compact automatically: {e}"})
         ctx.subagent = lambda d, p, f: self._subagent(ctx, d, p, f, model, num_ctx)
         ctx.skill = lambda n: self._skill(n, ctx.root)
-        ctx.ask_user = lambda q, o: self._ask_user(ctx.call_id, q, o)
+        ctx.ultra = lambda pattern, task, scope: self._ultra(ctx, model, num_ctx, pattern, task, scope)
+        ctx.ask_user = lambda qs: self._ask_user(ctx.call_id, qs)
         names = []
         for b in (images or [])[:4]:
             try:
@@ -448,7 +483,14 @@ class Agent:
             browser_hint = ("\nThe user explicitly wants this done in the browser. Do NOT use WebSearch for it: open the site with "
                             "browser_navigate (for Google: https://www.google.com/search?q=<url-encoded query>), read the page with "
                             "browser_read, and call browser_handoff if a CAPTCHA or bot check appears.\n")
-        index = list_skills(ctx.root)
+        prof = await profiles.get_profile(self.client, model)
+        await self.send({"type": "profile", **prof.summary()})
+        if prof.notes:
+            for n in prof.notes:
+                if "overridden" not in n:
+                    await self.send({"type": "notice", "text": f"{model}: {n}"})
+        profiles.note_issue(model, "runs") if not _review else None
+        index = list_skills(ctx.root) if prof.skills_index else []
         if index:
             extra += "\nSkills you can load with the Skill tool when the task matches:\n" + "\n".join(
                 f"- {k['name']}: {k['description']}" for k in index) + "\n"
@@ -459,7 +501,15 @@ class Agent:
         skills, skill_names = load_skills(text, ctx.root)
         if skill_names:
             await self.send({"type": "notice", "text": "Skills: " + ", ".join(skill_names)})
-        system = SYSTEM.format(name=NAME, preview=f"http://127.0.0.1:{br.PREVIEW_PORT}", root=ctx.root, platform=platform.system(), today=date.today().isoformat(),
+        sys_tpl = SYSTEM
+        drop = []
+        if prof.prompt == "lean" or not prof.planning:
+            drop += ["TodoWrite"]
+        if prof.prompt == "lean":
+            drop += ["Task tool", "Skill tool"]
+        if drop:
+            sys_tpl = "\n".join(l for l in SYSTEM.split("\n") if not any(d in l for d in drop))
+        system = sys_tpl.format(name=NAME, preview=f"http://127.0.0.1:{br.PREVIEW_PORT}", root=ctx.root, platform=platform.system(), today=date.today().isoformat(),
                                extra=extra + browser_hint + skills, tree=tools.LS(ctx, ".", 1))
         recent: list[str] = []
         shot = None
@@ -478,7 +528,9 @@ class Agent:
             t0, nsteps, info, orig_text = c["t0"], c["nsteps"], c["info"], c["text"]
         try:
             await self.sync_mcp(s["root"])
-            specs = tools.SPECS + self.mcp.specs()
+            names = prof.tool_names(list(tools.TOOLS)) if prof.tools else []
+            specs = [tools.TOOLS[n][2] for n in names] + (self.mcp.specs() if prof.tools else [])
+            allowed = set(names) | {sp["function"]["name"] for sp in self.mcp.specs()}
             for _ in range(MAX_STEPS):
                 _trim(s["messages"], int(num_ctx * 0.7))
                 msgs = [{"role": "system", "content": system}] + _wire(s["messages"])
@@ -507,11 +559,17 @@ class Agent:
                         if attempt < 3 and any(k in low for k in ("xml syntax", "tool call", "parse", "stalled")):
                             # the model emitted a malformed tool call that the server could not parse: ask again
                             content, calls, done = "", [], {}
+                            profiles.note_issue(model, "malformed")
                             msgs = msgs + [{"role": "user", "content": "Your last tool call was malformed and could not be "
                                             "parsed. Call the tool again with valid arguments."}]
                             continue
                         raise
 
+                if not calls and content.strip() and prof.tools:
+                    saved = profiles.salvage_text_calls(content, allowed)
+                    if saved:
+                        calls, content = saved, ""
+                        profiles.note_issue(model, "text_calls")
                 msg = {"role": "assistant", "content": content}
                 if calls:
                     msg["tool_calls"] = calls
@@ -560,6 +618,7 @@ class Agent:
                     if pasted or announced or refused:
                         # small models paste code into the chat, or announce an action and then stop without calling a tool
                         nudges += 1
+                        profiles.note_issue(model, "announced")
                         s["messages"].append({"role": "user", "review": True, "content":
                                               ("You pasted code into the chat. Do not do that. Create the file now with the Write tool at the "
                                                "path from the request, then verify it (run it, or open it in the browser)." if pasted else
@@ -614,7 +673,7 @@ class Agent:
                         for src in _sources(name, args, result):
                             if not any(x["url"] == src["url"] for x in info["sources"]):
                                 info["sources"].append(src)
-                        if name in ("Write", "Edit") and meta.get("diff"):
+                        if name in ("Write", "Edit", "MultiEdit") and meta.get("diff"):
                             ch = info["changes"].setdefault(args.get("file_path", ""), {"added": 0, "removed": 0, "created": False})
                             ch["added"] += meta["diff"]["added"]; ch["removed"] += meta["diff"]["removed"]
                             ch["created"] = ch["created"] or bool(meta.get("created"))
@@ -626,7 +685,7 @@ class Agent:
                     if name == "TodoWrite" and ok:
                         s["todos"] = ctx.todos
                         await self.send({"type": "todos", "items": ctx.todos})
-                    if name in ("Write", "Edit") and ok:
+                    if name in ("Write", "Edit", "MultiEdit") and ok:
                         await self.send({"type": "changed", "path": args.get("file_path", ""),
                                          "created": bool(meta.get("created")), "diff": meta.get("diff"),
                                          "text": new_text if new_text and len(new_text) < 200_000 else None})
@@ -667,7 +726,7 @@ class Agent:
                 if gate:
                     await self.send({"type": "notice", "text": "Design audit found problems; running a fix pass."})
             if not _review and not cancelled and final_idx is not None and (gate or (
-                    review_on and info["changes"] and nsteps >= 6)):
+                    review_on and prof.review and info["changes"] and nsteps >= 6)):
                 # a second pass: check the result against the request (and fix what the audit measured)
                 self._carry = {"nsteps": nsteps, "t0": t0, "info": info, "text": text}
                 save(s)
@@ -735,7 +794,8 @@ class Agent:
         return f"Page: {page}\n" + format_report(results) if serious else ""
 
     async def _present(self, s, idx, user_idx, question, answer, hints):
-        res = await pres.present(self.client, question, answer, hints)
+        helper = await profiles.pick_helper(self.client) or pres.MODEL
+        res = await pres.present(self.client, question, answer, hints, helper)
         if not res:
             return
         s["messages"][idx]["present"] = res
@@ -750,8 +810,9 @@ class Agent:
                 return f"Unknown MCP tool {name}.", False
         elif name not in tools.TOOLS:
             return f"Unknown tool {name}. Available: {', '.join(tools.TOOLS)}", False
-        if mode == "plan" and (tools.TOOLS.get(name, ("",))[0] in ("write", "shell") or name.startswith("mcp__")
-                               or name in ("browser_click", "browser_type", "browser_key", "browser_eval")):
+        if mode == "plan" and not (name == "Git" and args.get("action") in GIT_READ) and (
+                tools.TOOLS.get(name, ("",))[0] in ("write", "shell") or name.startswith("mcp__")
+                or name in ("browser_click", "browser_type", "browser_key", "browser_eval")):
             return ("Plan mode is read-only: nothing was changed. Finish your investigation and present the plan as your answer; "
                     "the user will switch the mode to let you implement it."), False
         if not mcp_server:

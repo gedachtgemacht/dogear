@@ -16,8 +16,10 @@ async def run(prompt, mode="auto", answer=None, model="qwen3.6:35b-a3b", review=
             t = m["type"]
             if t == "tool": tools.append(m["name"])
             elif t == "ask":
-                asked = (m["question"], m["options"])
-                await ws.send(json.dumps({"type": "answer", "id": m["id"], "value": answer or (m["options"][0] if m["options"] else "ok")}))
+                qs = m.get("questions") or [{"question": m.get("question", ""), "options": [{"label": o} for o in m.get("options", [])]}]
+                asked = [(q["question"], [o["label"] for o in q["options"]]) for q in qs]
+                value = [{"selected": [q["options"][0]["label"]] if q["options"] and not answer else [], "other": answer or ""} for q in qs]
+                await ws.send(json.dumps({"type": "answer", "id": m["id"], "value": value}))
             elif t == "notice": notes.append(m["text"])
             elif t == "summary": summary = m
             elif t == "done": done = True

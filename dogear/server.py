@@ -14,7 +14,7 @@ import uvicorn
 from . import agent as A
 from . import browser as br
 from . import checkpoint as cpt
-from . import llm, tools
+from . import llm, profiles, tools
 from .brand import NAME
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -85,10 +85,19 @@ async def index():
 @app.get("/api/state")
 async def state():
     try:
-        ms = await llm.models(client)
+        profs = await profiles.list_profiles(client)
     except Exception:
-        ms = []
-    return {"settings": settings(), "models": ms, "sessions": A.listing(), "name": NAME, "preview": PREVIEW_URL}
+        profs = []
+    return {"settings": settings(), "models": [p.model for p in profs], "profiles": {p.model: p.summary() for p in profs},
+            "sessions": A.listing(), "name": NAME, "preview": PREVIEW_URL}
+
+
+@app.get("/api/profile")
+async def profile(model: str, reset: bool = False):
+    if reset:
+        profiles.invalidate(model)
+    p = await profiles.get_profile(client, model)
+    return {**p.summary(), "tools_loaded": p.tool_names(list(tools.TOOLS)) if p.tools else []}
 
 
 @app.get("/api/tree")
@@ -247,7 +256,7 @@ async def ws(sock: WebSocket):
             elif t == "answer":
                 for a in AGENTS:
                     if m["id"] in a.asks:
-                        a.answer_ask(m["id"], str(m.get("value", "")))
+                        a.answer_ask(m["id"], m.get("value", ""))
             elif t == "undo" and not busy():
                 root = Path(m.get("root", ""))
                 if str(root) in (ag.session["root"], cfg["root"]):

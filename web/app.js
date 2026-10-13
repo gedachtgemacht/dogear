@@ -76,7 +76,7 @@ const rel = p => (S.root && p.startsWith(S.root + "/")) ? p.slice(S.root.length 
 const q = o => Object.entries(o).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
 const api = (path, o) => fetch(`${path}?${q({ root: S.root, ...o })}`).then(r => r.ok ? r.json() : Promise.reject(r.status));
 const KIND = { browser_navigate: "browser", browser_read: "browser", browser_click: "browser", browser_type: "browser", browser_key: "browser",
-  browser_scroll: "browser", browser_screenshot: "browser", browser_console: "browser", browser_eval: "browser", browser_wait: "browser", browser_resize: "browser", browser_audit: "browser", browser_handoff: "browser", WebSearch: "net", Task: "agent", Skill: "read", ViewImage: "read", AskUser: "read", Read: "read", LS: "read", Glob: "read", Grep: "read", BashOutput: "read", Write: "write", Edit: "write", Bash: "shell", KillBash: "shell", WebFetch: "net", TodoWrite: "todo" };
+  browser_scroll: "browser", browser_screenshot: "browser", browser_console: "browser", browser_eval: "browser", browser_wait: "browser", browser_resize: "browser", browser_audit: "browser", browser_handoff: "browser", WebSearch: "net", Task: "agent", Ultra: "agent", Skill: "read", ViewImage: "read", MultiEdit: "write", Outline: "read", FindSymbol: "read", RunTests: "shell", Git: "shell", AskUser: "read", Read: "read", LS: "read", Glob: "read", Grep: "read", BashOutput: "read", Write: "write", Edit: "write", Bash: "shell", KillBash: "shell", WebFetch: "net", TodoWrite: "todo" };
 const sendWS = o => S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify(o));
 
 /* ============================================================ chat */
@@ -224,7 +224,7 @@ function summarize(name, ok, text, meta) {
     case "Glob": return `Found ${meta.files ?? 0} files`;
     case "Grep": return `${meta.matches ?? 0} matches`;
     case "Write": return meta.created ? `Created file, ${meta.diff.added} lines` : `Overwrote file (+${meta.diff.added} −${meta.diff.removed})`;
-    case "Edit": return `Updated: +${meta.diff?.added ?? 0} −${meta.diff?.removed ?? 0}`;
+    case "Edit": case "MultiEdit": return `Updated: +${meta.diff?.added ?? 0} −${meta.diff?.removed ?? 0}`;
     case "Bash": return (first || "(no output)") + (meta.exit ? `  · exit ${meta.exit}` : "");
     case "TodoWrite": return `${meta.done}/${meta.total} tasks done`;
     case "WebFetch": return `Fetched · HTTP ${meta.status}`;
@@ -241,14 +241,54 @@ function finishCard(c, ok, text, meta = {}) {
   else if (c.name !== "TodoWrite") { c.tb.append(el("pre", "", text.slice(0, 5000))); if (!ok) c.card.classList.add("open"); }
 }
 
+const GLYPH = { queued: "○", running: "◌", done: "●", failed: "✕" };
+function ultraEvent(m) {
+  const c = S.cards[m.call]; if (!c) return;
+  c.card.classList.add("open"); c.tb.classList.add("show");
+  let tree = c.ultra;
+  if (!tree) { tree = c.ultra = { el: el("div", "utree"), phases: {}, rows: {} }; c.tb.prepend(tree.el); }
+  const phase = m.phase || "run";
+  if (!tree.phases[phase]) { const h = el("div", "uphase", phase); tree.el.append(h); tree.phases[phase] = h; }
+  if (m.event === "phase") { tree.phases[phase].dataset.state = m.state; if (m.detail) tree.phases[phase].title = m.detail; return; }
+  if (m.event === "log") { tree.el.append(el("div", "ulog", m.detail || "")); return; }
+  if (m.event === "agent") {
+    let row = tree.rows[m.id];
+    if (!row) { row = tree.rows[m.id] = el("div", "uagent"); tree.phases[phase].after(row); }
+    row.dataset.state = m.state; row.textContent = `${GLYPH[m.state] || "·"} ${m.label || m.id}` + (m.state === "failed" && m.detail ? ` — ${m.detail}` : "");
+  }
+}
+
 function askBox(m) {
   const c = S.cards[m.id]; if (!c) return;
-  const box = el("div", "ask"), done = v => { sendWS({ type: "answer", id: m.id, value: v }); box.remove(); };
-  box.append(el("p", "", m.question));
-  const o = el("div", "opts");
-  (m.options || []).forEach((t, i) => { const b = el("button"); b.append(el("kbd", "", String(i + 1)), t); b.onclick = () => done(t); o.append(b); });
-  const row = el("div", "askrow"), inp = el("input"); inp.placeholder = "Or type an answer…"; inp.onkeydown = e => { if (e.key === "Enter" && inp.value.trim()) done(inp.value.trim()); };
-  row.append(inp); box.append(o, row); c.card.classList.add("open"); c.card.append(box); inp.focus();
+  const qs = m.questions || [{ question: m.question, options: (m.options || []).map(label => ({ label })) }];
+  const box = el("div", "ask form"), state = qs.map(() => ({ selected: new Set(), other: "" }));
+  const send = el("button", "sendans", "Send answers"); send.type = "button"; send.disabled = true;
+  const refresh = () => { send.disabled = !state.every(st => st.selected.size || st.other.trim()); };
+  qs.forEach((q, qi) => {
+    const sec = el("div", "q"), head = el("div", "qhead");
+    if (q.header) head.append(el("span", "qtag", q.header));
+    head.append(el("span", "qtext", q.question)); if (q.multi) head.append(el("span", "qmulti", "choose any"));
+    const list = el("div", "opts"), prev = el("pre", "preview"); prev.hidden = true;
+    (q.options || []).forEach((o, oi) => {
+      const b = el("button", "opt"); b.type = "button"; b.dataset.l = o.label;
+      const txt = el("span", "otxt"); txt.append(el("b", "", o.label)); if (o.description) txt.append(el("small", "", o.description));
+      b.append(el("span", q.multi ? "mark box" : "mark dot"), txt);
+      b.onclick = () => {
+        const st = state[qi];
+        if (q.multi) st.selected.has(o.label) ? st.selected.delete(o.label) : st.selected.add(o.label); else st.selected = new Set([o.label]);
+        list.querySelectorAll(".opt").forEach(x => x.classList.toggle("on", st.selected.has(x.dataset.l)));
+        if (o.preview) { prev.textContent = o.preview; prev.hidden = false; } else prev.hidden = true;
+        refresh();
+      };
+      list.append(b);
+    });
+    const other = el("input"); other.placeholder = "Or write your own answer…"; other.oninput = () => { state[qi].other = other.value; refresh(); };
+    other.onkeydown = e => { if (e.key === "Enter" && !send.disabled) send.click(); };
+    sec.append(head, list, prev, other); box.append(sec);
+  });
+  send.onclick = () => { sendWS({ type: "answer", id: m.id, value: state.map(st => ({ selected: [...st.selected], other: st.other })) }); box.remove(); };
+  box.append(send); c.card.classList.add("open"); c.card.append(box);
+  box.querySelector(".opt")?.focus();
 }
 
 function approvalBox(m) {
@@ -535,9 +575,14 @@ function handle(m) {
       }
       break;
     }
+    case "profile": { const o = [...$("#model").options].find(x => x.value === m.model);
+      const caps = [m.tools ? "tools" : "no tools", m.vision ? "vision" : null, m.thinking ? "reasoning" : null].filter(Boolean).join(", ");
+      if (o) o.title = `${m.params_b ? m.params_b.toFixed(1) + "B parameters" : "size unknown"}${m.moe ? " (MoE)" : ""}\ntoolbox: ${m.toolbox}, prompt: ${m.prompt}\n${caps}${m.notes.length ? "\n" + m.notes.join("\n") : ""}`;
+      $("#model").title = o ? o.title : ""; break; }
     case "approval": approvalBox(m); break;
     case "sub": { const c = S.cards[m.id]; if (c) { c.card.classList.add("open"); c.tb.classList.add("show"); c.tb.append(el("div", "subline", m.text)); } break; }
     case "ask": askBox(m); break;
+    case "ultra": ultraEvent(m); break;
     case "undone": turn().after.append(el("div", "empty", `Restored ${m.files.length} file${m.files.length === 1 ? "" : "s"} to the state before the run.`)); scheduleTree(); break;
     case "result": { const c = S.cards[m.id]; if (c) { finishCard(c, m.ok, m.text, m.meta || {}); if (c.name.startsWith("browser_")) agentBusy(false); } break; }
     case "changed": {
@@ -624,7 +669,7 @@ const MODE_TXT = { ask: "Confirms edits and commands", edit: "Confirms commands"
 function setMode(v) { S.mode = v; document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); $("#h-mode").textContent = MODE_TXT[v]; }
 
 const SLASHES = [
-  ["/new", "start a new session"], ["/compact", "condense the conversation to free context (optional focus)"], ["/clear", "clear this session"], ["/mode", "ask | edit | auto"], ["/model", "switch model"],
+  ["/new", "start a new session"], ["/ultra", "multi-agent run: review | research | design | audit  <task>"], ["/compact", "condense the conversation to free context (optional focus)"], ["/clear", "clear this session"], ["/mode", "ask | edit | auto"], ["/model", "switch model"],
   ["/mcp", "reload MCP servers"], ["/init", "write a KERF.md for this project"], ["/help", "list commands"],
 ];
 function slashMenu(v) {
@@ -640,6 +685,8 @@ function command(text) {
     case "/mode": if (["ask", "edit", "auto"].includes(arg)) { setMode(arg); note(`Mode: ${arg}`); } else note("Usage: /mode ask | edit | auto"); break;
     case "/model": { const o = [...$("#model").options].find(o => o.value.includes(arg)); if (o && arg) { $("#model").value = o.value; note(`Model: ${o.value}`); } else note("Models: " + [...$("#model").options].map(o => o.value).join(", ")); break; }
     case "/mcp": sendWS({ type: "mcp_reload" }); note("Reloading MCP servers…"); break;
+    case "/ultra": { const [pat, ...rest] = arg.split(/\s+/); if (!["review", "research", "design", "audit"].includes(pat)) { note("Usage: /ultra review|research|design|audit <task>"); break; }
+      return `Use the Ultra tool with pattern "${pat}" for this task: ${rest.join(" ") || "the whole project"}`; }
     case "/compact": if (S.busy) note("Wait for the current run to finish."); else { sendWS({ type: "compact", focus: arg }); note("Condensing the conversation…"); } break;
     case "/init": return "Explore this project (LS, Glob, Read the key files) and write a concise KERF.md in the project root: what it is, how to run, test and build it, the layout, and the conventions a coding agent must follow.";
     default: note("Commands: " + SLASHES.map(s => s[0]).join("  "));
@@ -679,7 +726,10 @@ async function refresh() {
   const { settings: c, models, sessions } = S.st, sel = $("#model");
   if (S.st.name) { document.title = S.st.name; $(".brand span").textContent = S.st.name; }
   if (!sel.options.length) {
-    for (const m of models.includes(c.model) ? models : [c.model, ...models]) sel.append(new Option(m, m));
+    const pf = S.st.profiles || {};
+    for (const m of models.includes(c.model) ? models : [c.model, ...models]) {
+      const o = new Option(pf[m] ? `${m}  ·  ${pf[m].label}` : m, m); o.title = (pf[m]?.notes || []).join("\n"); sel.append(o);
+    }
     sel.value = c.model; $("#think").checked = c.think; $("#review").checked = c.review !== false; $("#ctx").value = String(c.num_ctx); $("#root").value = S.root = c.root; setMode(c.mode);
   }
   renderHistory(sessions);
