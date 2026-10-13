@@ -656,6 +656,7 @@ function handle(m) {
     case "done": if (S.cur && S.turn) S.turn.raw = S.curText; if (S.turns.length >= 4) sendWS({ type: "titles" }); setBusy(false); agentBusy(false); refresh(); if (S.follow && S.webTouched) openWS("@preview", true); S.webTouched = false; break;
     case "session": renderSession(m.session); S.viewOnly = !!m.live;
       if (m.live) { setBusy(true); $("#input").placeholder = "This branch is still running in the background (view only)"; } break;
+    case "renamed": refresh(); if (m.id === S.sid) { S.meta.note = m.note || ""; renderBranchBar(); } break;
     case "runs": S.runs = Object.fromEntries(m.runs.map(r => [r.id, r])); if (m.runs.length && !S.planOpen) planShow(true); renderRail(S.todos); sbRuns(); break;
     case "run_status": S.runs[m.info.id] = { ...(S.runs[m.info.id] || {}), ...m.info }; renderRail(S.todos); sbRuns();
       if (S.viewOnly && m.info.id === S.sid && m.info.status !== "running" && m.info.status !== "waiting") { S.viewOnly = false; setBusy(false); sendWS({ type: "open", id: S.sid }); } break;
@@ -677,7 +678,7 @@ function handle(m) {
 function renderSession(s) {
   setTimeout(() => SB.tab === "memory" ? loadMemory() : sbBadges(), 0);
   S.sid = s.id; S.root = s.root; $("#root").value = s.root; S.cards = {}; S.queue = []; S.cur = null; S.changed.clear();
-  S.meta = { parent: s.parent || null, pins: s.pins || [], titles: s.titles || {}, lineage: s.lineage || s.id, worktree: s.worktree && !s.worktree.removed ? s.worktree : null }; S.ultra = null;
+  S.meta = { parent: s.parent || null, note: s.note || "", pins: s.pins || [], titles: s.titles || {}, lineage: s.lineage || s.id, worktree: s.worktree && !s.worktree.removed ? s.worktree : null }; S.ultra = null;
   $("#term").innerHTML = ""; for (const k in T) delete T[k]; termRun(); $("#term-wrap").hidden = true;
   log.innerHTML = ""; S.turns = []; S.turn = null; if (!s.messages.length) emptyState();
   for (const m of s.messages) {
@@ -844,7 +845,7 @@ function renderOutline() {
 }
 function renderBranchBar() {
   const b = $("#branchbar"), p = S.meta.parent; b.hidden = !p; if (!p) return; b.innerHTML = "";
-  b.append(el("span", "", `Branch of “${p.title}” · ${p.where === "before" ? `edited at turn ${p.turn + 1}` : `from turn ${p.turn + 1}`}${S.meta.worktree ? " · own worktree" : ""}`));
+  b.append(el("span", "", `Branch of “${p.title}” · ${p.where === "before" ? `edited at turn ${p.turn + 1}` : `from turn ${p.turn + 1}`}${S.meta.worktree ? " · own worktree" : ""}${S.meta.note ? " — " + S.meta.note : ""}`));
   const add = (txt, fn, title) => { const x = el("button", "", txt); if (title) x.title = title; x.onclick = fn; b.append(x); };
   add("Compare", () => openCompare());
   if (S.meta.worktree) {

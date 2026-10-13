@@ -170,7 +170,7 @@ def listing() -> list[dict]:
             s = json.loads(f.read_text())
             par = s.get("parent") or {}
             out.append({"id": s["id"], "title": s["title"], "root": s["root"], "updated": s["updated"],
-                        "parent": par.get("id"), "parent_turn": par.get("turn"), "where": par.get("where"),
+                        "parent": par.get("id"), "parent_turn": par.get("turn"), "where": par.get("where"), "note": s.get("note", ""),
                         "worktree": bool(s.get("worktree")), "turns": len(user_positions(s["messages"])),
                         "lineage": lineage_of(s)})
         except Exception:
@@ -836,9 +836,65 @@ class Agent:
             if final_idx is not None and s["messages"][final_idx].get("content"):
                 hints = ", ".join(sorted(info["tools"])) or "no tools"
                 asyncio.create_task(self._present(s, final_idx, user_idx, orig_text, s["messages"][final_idx]["content"], hints))
+                asyncio.create_task(self._name(s))
                 if nsteps >= 5 and mode != "plan" and not cancelled and prof.tier != "small" and (info["changes"] or info["commands"]):
                     asyncio.create_task(self._suggest(ctx.root, user_idx, orig_text, s["messages"][final_idx]["content"],
                                                       list(info["changes"]), list(info["commands"])))
+
+    async def _name(self, s: dict):
+        """Name the session by its topic and, for a branch, say in one line how it differs from the original.
+        Done once after the first new turn and again when the conversation has grown (turn 5)."""
+        try:
+            msgs, pos, par = s["messages"], user_positions(s["messages"]), s.get("parent")
+            kept = (par["turn"] if par.get("where") == "before" else par["turn"] + 1) if par else 0
+            n = len(pos)
+            if n <= kept or n == 0:
+                return                                           # a branch that has not produced anything new yet
+            done = s.get("named", 0)
+            if done and not (n >= 5 and done < 5):
+                return
+
+            def turn_text(m, i):
+                end = pos[i + 1] if i + 1 < len(pos) else len(m)
+                ans = next((x.get("content", "") for x in reversed(m[pos[i]:end]) if x["role"] == "assistant" and x.get("content") and not x.get("tool_calls")), "")
+                return {"request": m[pos[i]]["content"][:500], "answer": ans[:500]}
+
+            info: dict = {"turns": [turn_text(msgs, i) for i in range(min(n, 3))] if not par else [turn_text(msgs, i) for i in range(kept, min(n, kept + 2))]}
+            if par:
+                info["branch_of"] = par.get("title", "")
+                src = load(par["id"])
+                if src:
+                    spos = user_positions(src["messages"])
+                    if kept < len(spos):
+                        info["original_continued_with"] = turn_text(src["messages"], kept)
+                    info["original_topic"] = src["title"]
+                if kept:
+                    info["shared_context"] = [turn_text(msgs, kept - 1)["request"][:200]]
+            helper = await profiles.pick_helper(self.client) or HELPER_MODEL
+            schema = {"type": "object", "required": ["title", "note"], "properties": {"title": {"type": "string"}, "note": {"type": "string"}}}
+            system = ("You name conversation threads of a coding assistant. Reply with JSON {title, note}.\n"
+                      "title: the topic in 2-5 words, in the language of the user's messages, no quotes, no trailing period. Name the specific thing "
+                      "(for example 'Hero-Stempel als Siegel', 'Login-Fehler beheben'), never generic words like 'Question', 'Code change' or 'Conversation'.\n"
+                      "note: only if `branch_of` is present: ONE sentence of at most 14 words that names the concrete difference as 'instead of X, Y' "
+                      "(compare `turns` with `original_continued_with`; if the original has no continuation, say what this branch does on top of the shared start). "
+                      "Say what was done, not that it differs. Same language as the user. Otherwise an empty string.")
+            body = {"model": helper, "stream": False, "think": False, "format": schema, "keep_alive": "30m",
+                    "options": {"temperature": 0, "num_ctx": 8192},
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(info, ensure_ascii=False)}]}
+            r = await self.client.post(f"{llm.URL}/api/chat", json=body, timeout=90)
+            out = json.loads(r.json()["message"]["content"])
+            title = re.sub(r"\s+", " ", str(out.get("title", ""))).strip(" \"'.")[:48]
+            note = re.sub(r"\s+", " ", str(out.get("note", ""))).strip(" \"'")[:140] if par else ""
+            if len(title) < 3:
+                return
+            m = re.match(r"(Variant [A-Z]) · ", s.get("title", ""))
+            s["title"] = f"{m.group(1)} · {title}"[:60] if m else title
+            s["note"] = note
+            s["named"] = n
+            save(s)
+            await self.send({"type": "renamed", "id": s["id"], "title": s["title"], "note": s["note"]})
+        except Exception:
+            pass
 
     async def _suggest(self, root: Path, user_idx: int, request: str, answer: str, changed: list[str], commands: list[str]):
         """After a longer run: propose what is worth remembering. The user decides; nothing is saved automatically."""

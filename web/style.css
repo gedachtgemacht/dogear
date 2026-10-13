@@ -592,3 +592,4 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 #mlist .mem-i, #mcp .mcp-s { margin-bottom: 2px; }
 .mcp-s .mh { display: flex; align-items: center; gap: 8px; }
 .mcp-s .mh i { margin-right: 0; }
+.snote { font: 12px/1.4 var(--ui); color: var(--ink2); margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

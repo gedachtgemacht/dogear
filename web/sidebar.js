@@ -149,7 +149,9 @@ function sessionRow(s, kids, depth) {
   if (hasKids) meta.append(el("span", "", plural2(kids.length, "branch").replace(/branchs/, "branches")));
   if (s.worktree) meta.append(el("span", "chip", "worktree"));
   if (run) meta.append(el("span", `chip st-${run.status}`, run.status));
-  main.append(title, meta);
+  main.append(title);
+  if (s.note && depth) main.append(el("div", "snote", s.note));
+  main.append(meta);
   const x = el("button", "sdel", "✕"); x.title = "Delete";
   let armed = 0;
   x.onclick = async e => {

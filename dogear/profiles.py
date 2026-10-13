@@ -195,10 +195,18 @@ async def list_profiles(client: httpx.AsyncClient) -> list[Profile]:
     return sorted(out, key=lambda p: p.model)
 
 
+PREFERRED_HELPER = "qwen3.5:4b"
+
+
 async def pick_helper(client: httpx.AsyncClient, avoid: str = "") -> str | None:
-    """The smallest installed chat model that supports tools: a cheap helper for sub-agents and formatting."""
-    cands = [p for p in await list_profiles(client) if p.tools and p.model != avoid and p.params_b and p.params_b >= 1]
-    cands.sort(key=lambda p: p.params_b)
+    """The model for small side jobs (titles, structure, suggestions, sub-agents).
+    The preferred helper (data/profiles.json key "_helper", default qwen3.5:4b) wins when it is installed and not the
+    model already in use; otherwise the smallest installed tool-capable chat model of at least 2.5B."""
+    ps = [p for p in await list_profiles(client) if p.tools]
+    pref = _load_json(OVERRIDES_FILE).get("_helper") or PREFERRED_HELPER
+    if any(p.model == pref for p in ps) and pref != avoid:
+        return pref
+    cands = sorted((p for p in ps if p.model != avoid and p.params_b and p.params_b >= 2.5), key=lambda p: p.params_b)
     return cands[0].model if cands else None
 
 
