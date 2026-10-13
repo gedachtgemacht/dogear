@@ -3,6 +3,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import platform
 import re
 import time
@@ -15,6 +16,7 @@ import httpx
 from . import browser as br, llm, tools
 from . import present as pres
 from . import checkpoint as cp
+from .audit import AUDIT_JS, format_report
 from .brand import NAME
 from .mcp import MCP, MCPError
 
@@ -131,7 +133,7 @@ def _sources(name: str, args: dict, result: str) -> list[dict]:
 
 
 REVIEW_PROMPT = """Review pass. Check your actual result against the original request below, point by point.
-Look at the real artifacts: run the tests, open the page and look at screenshots at desktop and at phone width, read the changed files.
+Look at the real artifacts: run the tests, open the page, run browser_audit and fix its HIGH and MEDIUM findings, read the changed files.
 List concrete defects you can observe: wrong behavior, a missing requirement, duplicated or confusing controls, unclear icons, low contrast, leftover debug code.
 Fix the real defects with minimal edits. Do not add features. If everything is fine, say so.
 End with a short report: what you checked, what you fixed, what remains, and your assumptions.
@@ -658,12 +660,24 @@ class Agent:
             await self.send({"type": "error", "text": f"{type(e).__name__}: {e}"})
         finally:
             s["todos"] = ctx.todos
-            if review_on and not _review and not cancelled and final_idx is not None and info["changes"] and nsteps >= 6:
-                # a second pass that checks the result against the request; it sends summary and done itself
+            gate = ""
+            if not _review and not cancelled and final_idx is not None and mode != "plan" and any(
+                    p.lower().endswith((".html", ".htm", ".css", ".js")) for p in info["changes"]):
+                gate = await self._audit_changed(ctx.root, list(info["changes"]))
+                if gate:
+                    await self.send({"type": "notice", "text": "Design audit found problems; running a fix pass."})
+            if not _review and not cancelled and final_idx is not None and (gate or (
+                    review_on and info["changes"] and nsteps >= 6)):
+                # a second pass: check the result against the request (and fix what the audit measured)
                 self._carry = {"nsteps": nsteps, "t0": t0, "info": info, "text": text}
                 save(s)
                 await self.send({"type": "review_start"})
-                await self.turn(REVIEW_PROMPT.format(task=text[:2000]), model, think, mode, num_ctx, False, True)
+                prompt = REVIEW_PROMPT.format(task=text[:2000])
+                if gate:
+                    prompt += ("\n\nAn automatic measured design audit of your page found these problems:\n" + gate +
+                               "\n\nFix every HIGH and MEDIUM finding. Then run browser_audit yourself and repeat until it is clean "
+                               "(at most three rounds). Mention anything you decided not to fix and why.")
+                await self.turn(prompt, model, think, mode, num_ctx, False, True)
                 return
             self.running = False
             if final_idx is not None:
@@ -683,6 +697,42 @@ class Agent:
             if final_idx is not None and s["messages"][final_idx].get("content"):
                 hints = ", ".join(sorted(info["tools"])) or "no tools"
                 asyncio.create_task(self._present(s, final_idx, user_idx, orig_text, s["messages"][final_idx]["content"], hints))
+
+    async def _audit_changed(self, root: Path, changed: list[str]) -> str:
+        """Quality gate: measure the page the run produced. Returns the report if it has HIGH/MEDIUM findings, else ''."""
+        b = self.browser
+        if b is None:
+            return ""
+        rels = []
+        for p in changed:
+            try:
+                rels.append(str(Path(p).resolve().relative_to(root)) if os.path.isabs(p) else p)
+            except ValueError:
+                pass
+        html = [p for p in rels if p.lower().endswith((".html", ".htm"))]
+        page = html[-1] if html else ("index.html" if (root / "index.html").exists() and rels else None)
+        if not page:
+            return ""
+        old = (b.vw, b.vh)
+        try:
+            await b.ensure()
+            await b.navigate(f"http://127.0.0.1:{br.PREVIEW_PORT}/{page}")
+            if await b.eval("document.body && document.body.innerText.includes('Nothing here yet')"):
+                return ""
+            results = []
+            for w, h in ((1280, 800), (390, 844)):
+                await b.set_viewport(w, h)
+                await asyncio.sleep(0.4)
+                results.append(await b.eval(AUDIT_JS))
+        except Exception:
+            return ""
+        finally:
+            try:
+                await b.set_viewport(*old)
+            except Exception:
+                pass
+        serious = any(f["sev"] in ("high", "medium") for r in results for f in r["findings"])
+        return f"Page: {page}\n" + format_report(results) if serious else ""
 
     async def _present(self, s, idx, user_idx, question, answer, hints):
         res = await pres.present(self.client, question, answer, hints)

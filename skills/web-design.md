@@ -8,7 +8,8 @@ triggers: html, css, website, web site, webpage, web page, webseite, homepage, l
 ## Process (always)
 1. Before coding, decide what the page is for and its ONE primary action. Write real content: no lorem ipsum, no "Item 1".
 2. Put colors, spacing and type in CSS custom properties first, then build.
-3. Verify like a designer: open the page in the browser, screenshot at 1280x800 and again at 390x844 (browser_resize). List the three worst problems against the checklist below, fix them, look again. Do this loop at least once before you say you are done.
+3. Verify with measurements, not impressions. Open the page in the browser and run `browser_audit` (it checks desktop and phone width: overflow, contrast, holes in grids, huge empty boxes, duplicated controls, tiny targets and icons, overlaps). Fix every HIGH and MEDIUM finding, run it again, and repeat until it is clean (at most three rounds). Your own reading of a screenshot misses small defects; the audit does not.
+4. Then take one screenshot at 1280x800 and one at 390x844 (`browser_resize`) and judge what measurements cannot: hierarchy (is the main thing the most prominent?), balance, whether it looks finished.
 
 ## Layout and space
 - Spacing scale: 4, 8, 12, 16, 24, 32, 48, 64 px. Related things sit close, groups get more space between them than inside.

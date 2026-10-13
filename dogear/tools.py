@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 
+from .audit import AUDIT_JS, format_report
 from .browser import BOT_NOTE, BrowserError
 
 MAX_OUT = 8000
@@ -518,6 +519,25 @@ async def browser_handoff(ctx, reason):
 
 
 @_wrap
+async def browser_audit(ctx, width=0):
+    """Measured audit of the current page at desktop and phone width (geometry, contrast, grids, targets, basics)."""
+    b = _b(ctx)
+    await b.ensure()
+    sizes = [(1280, 800), (390, 844)] if not width else [(int(width), 844 if int(width) < 600 else 800)]
+    old = (b.vw, b.vh)
+    results = []
+    try:
+        for w, h in sizes:
+            await b.set_viewport(w, h)
+            await asyncio.sleep(0.4)
+            results.append(await b.eval(AUDIT_JS))
+    finally:
+        await b.set_viewport(*old)
+    ctx.meta = {"findings": sum(len(r["findings"]) for r in results)}
+    return format_report(results)
+
+
+@_wrap
 async def browser_resize(ctx, width, height=0):
     b = _b(ctx)
     await b.ensure()
@@ -602,6 +622,9 @@ TOOLS = {
         {"expression": _p(S, "JavaScript expression")}, ["expression"])),
     "browser_handoff": ("browser", browser_handoff, _spec("browser_handoff", "Ask the user to complete a step only a human should do: CAPTCHA, bot check, login, 2FA, payment. Pauses until they click Continue. Never try to solve or bypass these yourself.",
         {"reason": _p(S, "short, specific: what the user must do")}, ["reason"])),
+    "browser_audit": ("browser", browser_audit, _spec("browser_audit", "Measured visual audit of the page open in the browser, at desktop and phone width: horizontal overflow, text contrast, "
+        "holes in grids, huge empty boxes, duplicated controls, tiny tap targets and icons, overlaps, missing basics. Run it after you build or change a page and fix every HIGH and MEDIUM finding.",
+        {"width": _p(I, "audit only this width instead of desktop and phone")}, [])),
     "browser_resize": ("browser", browser_resize, _spec("browser_resize", "Resize the browser viewport (e.g. 390x844 for a phone, 1280x800 for desktop) to check responsive layouts.",
         {"width": _p(I, "viewport width in px"), "height": _p(I, "viewport height in px")}, ["width"])),
     "browser_wait": ("browser", browser_wait, _spec("browser_wait", "Wait for the page to settle (max 10 seconds).",
