@@ -1,0 +1,11 @@
+Gestalte eine einseitige Website für die kleine Kaffeerösterei "Röstwerk Elbe" aus Hamburg-Altona. Eine Datei index.html, kein Framework, keine externen Bibliotheken, muss direkt im Browser laufen.
+
+Inhalt:
+- Kopf mit Name und kurzer Navigation
+- Einstieg mit einem klaren Versprechen (ehrlich und konkret, kein Werbesprech)
+- Drei Kaffees im Sortiment: "Hafen" (dunkel, Schokolade und Nuss, 12,50 €/250 g), "Fischmarkt" (mittel, Orange und Karamell, 13,90 €/250 g), "Elbstrand" (hell, Blaubeere und Jasmin, 15,80 €/250 g)
+- Abo: alle zwei Wochen 250 g, 5 % günstiger, jederzeit kündbar
+- Öffnungszeiten (Di–Fr 8–17 Uhr, Sa 9–14 Uhr) und Adresse (Ottenser Hauptstraße 41, 22765 Hamburg)
+- Fuß mit Impressum-Link und Instagram-Link
+
+Gestaltung: Es soll nach einer echten kleinen Rösterei aussehen und nicht nach einer KI-Vorlage. Eigene Handschrift, klare Hierarchie, gute Lesbarkeit, auf Handy und Desktop sauber. Prüfe das Ergebnis im Browser auf beiden Breiten.

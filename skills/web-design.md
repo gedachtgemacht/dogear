@@ -5,6 +5,17 @@ triggers: html, css, website, web site, webpage, web page, webseite, homepage, l
 ---
 # Web design rules
 
+## Concept first (sites, landing pages, anything with an identity)
+Tools and dashboards follow the neutral rules below. A page for a real business, product or person needs a concept BEFORE code; without one the result is the same dark card grid every time. After your plan, write this brief in six short lines, then build exactly to it:
+1. The real thing: name three concrete physical details of that world (materials, tools, places, smells, labels), e.g. for a roastery: jute sack, chalked price board, copper cooling tray. Use them for imagery and wording.
+2. Mood in three words. Not "modern", "clean" or "minimal".
+3. Palette of 4 colors with hex, taken from that world: one dominant background, one ink, one strong accent, one supporting tone. Default is a light, warm or tinted background; dark only if the subject is about night or screens.
+4. Type: one display face with character (system stacks: Georgia, "Iowan Old Style", Palatino for warmth; "Arial Black", Impact-like heavy sans with uppercase and letter-spacing for industrial; ui-monospace for labels and prices) over a plain body face. Make the display size really large (clamp(48px, 8vw, 120px)) on at least one element.
+5. One signature move, repeated: oversized numerals, a stamped label or badge, a ruled ledger or price-board table, a big edge-to-edge color block, one strongly cropped shape.
+6. One layout rule that breaks the default: asymmetric split, left-aligned over a visible grid, full-bleed color bands, content not centered.
+
+Never: three identical rounded cards in a row; gradient rectangles standing in for photos; faint outline drawings in a box; a headline of the form "X. Y." (two short slogans); dark background with 1px-bordered cards as the default; icons-in-circles. Products go in a list or table with large price numerals, or as one colored block each carrying a typographic label. If you draw something, draw it in inline SVG with flat, full-contrast shapes at large scale, or let type and color blocks carry the page.
+
 ## Process (always)
 1. Before coding, decide what the page is for and its ONE primary action. Write real content: no lorem ipsum, no "Item 1".
 2. Put colors, spacing and type in CSS custom properties first, then build.
@@ -34,7 +45,7 @@ triggers: html, css, website, web site, webpage, web page, webseite, homepage, l
 
 ## Patterns
 - Tool or app: header bar (name left, actions right), main work area using the full width, the result large and prominent, secondary things (history, settings) in a side panel or below and quieter.
-- Landing page: hero with a headline of 8 words or fewer, one supporting sentence and one button; then 3 feature blocks with real copy; then proof or details; footer.
+- Landing page: hero with a headline of 8 words or fewer that states something specific, one supporting sentence and one action; then the offer as a list, table or colored blocks (not identical cards); then practical details (hours, address, price); footer. Vary section rhythm: not every section is a centered title over a grid.
 - Dashboard: KPI row, one main chart or table, filters on top.
 
 ## Avoid (the generic AI look)
@@ -44,7 +55,7 @@ Three identical rounded cards stacked; purple or blue gradients on navy; emoji a
 - <meta name="viewport" content="width=device-width, initial-scale=1">, mobile-first flex/grid, no horizontal scroll at 360px, panes stack.
 - Semantic elements (header, main, nav, button, label), lang attribute, aria-live for changing results, everything keyboard operable.
 
-## Starter tokens
+## Starter tokens (neutral defaults for tools and apps; replace them with the concept's palette for sites)
 ```css
 :root {
   --bg: #f6f7f9; --surface: #ffffff; --line: #e3e6ea; --text: #15181d; --muted: #5b6470; --accent: #2f6fed; --danger: #c93c37;

@@ -573,7 +573,7 @@ class Agent:
         recent: list[str] = []
         shot = None
         t0, nsteps, final_idx, probes = time.time(), 0, None, 0
-        consec, abort, nudges, held = 0, False, 0, None
+        consec, abort, nudges, held, plan_asked = 0, False, 0, None, 0
         if not _review:
             before = None
             if mode != "plan":
@@ -689,6 +689,7 @@ class Agent:
                     final_idx = len(s["messages"]) - 1
                     break
 
+                plan_block = False
                 for c in calls:
                     fn = c["function"]
                     name, args = fn["name"], fn.get("arguments") or {}
@@ -700,7 +701,17 @@ class Agent:
                     await self.send({"type": "tool", "id": cid, "name": name, "args": args,
                                      "label": tools.label(name, args)})
                     ctx.call_id, ctx.meta = cid, {}
-                    result, ok = await self._run_tool(ctx, cid, name, args, mode)
+                    if (name in ("Write", "Edit", "MultiEdit") and not _review and mode != "plan" and prof.planning and "TodoWrite" in allowed
+                            and len(orig_text) >= 200 and (plan_asked == 0 or plan_block)
+                            and not any(t.get("status") != "completed" for t in ctx.todos)):
+                        plan_asked += 1
+                        plan_block = True
+                        ok = False
+                        result = ("Not executed: plan first. This is a multi-step job. Call TodoWrite now with 3-7 concrete steps "
+                                  "(for a web page: start with 'Design brief', end with 'Verify on desktop and phone'), exactly one "
+                                  "in_progress, then continue with the first step. Update the list as you go.")
+                    else:
+                        result, ok = await self._run_tool(ctx, cid, name, args, mode)
                     # stagnation: many diagnostic commands in a row, no edit in between
                     changed_code = name in ("Write", "Edit")
                     probes = 0 if changed_code else probes + (1 if name in ("Bash", "Read", "Grep") else 0)
