@@ -588,6 +588,67 @@ function termRun() { const n = Object.values(T).filter(t => t.live && t.bg).leng
 /* ============================================================ left column */
 let treeTimer = 0;
 const scheduleTree = () => { clearTimeout(treeTimer); treeTimer = setTimeout(renderTree, 150); };
+/* ============================================================ plan approval (phase 2) */
+function planCard(t, plan) {
+  t.after.querySelectorAll(".plancard").forEach(n => n.remove());
+  const box = el("div", "plancard"), head = el("div", "pc-h"), state = el("span", "pc-s");
+  head.append(el("b", "", "Plan"), state);
+  const why = el("details", "pc-why"); why.open = (plan.status || "proposed") === "proposed"; why.append(el("summary", "", "Reasoning"), el("div", "pc-r", plan.reasoning || ""));
+  const rows = el("div", "pc-rows"), tasks = (plan.tasks || []).map(x => ({ content: x.content, detail: x.detail || "" }));
+  const act = el("div", "pc-a");
+  const draw = () => {
+    rows.innerHTML = "";
+    const editable = plan.status === "proposed";
+    tasks.forEach((x, i) => {
+      const r = el("div", "pc-row"), n = el("span", "pc-n", String(i + 1));
+      let tx;
+      if (editable) { tx = el("input"); tx.value = x.content; tx.oninput = () => { x.content = tx.value; }; tx.spellcheck = false; }
+      else tx = el("span", "pc-t", x.content);
+      r.append(n, tx);
+      if (x.detail) r.append(el("div", "pc-d", x.detail));
+      if (editable) {
+        const up = el("button", "", "↑"), dn = el("button", "", "↓"), rm = el("button", "", "✕");
+        up.title = "Move up"; dn.title = "Move down"; rm.title = "Remove";
+        up.onclick = () => { if (i > 0) { [tasks[i - 1], tasks[i]] = [tasks[i], tasks[i - 1]]; draw(); } };
+        dn.onclick = () => { if (i < tasks.length - 1) { [tasks[i + 1], tasks[i]] = [tasks[i], tasks[i + 1]]; draw(); } };
+        rm.onclick = () => { tasks.splice(i, 1); draw(); };
+        const ctl = el("span", "pc-c"); ctl.append(up, dn, rm); r.append(ctl);
+      }
+      rows.append(r);
+    });
+    if (editable) {
+      const add = el("input", "pc-add"); add.placeholder = "Add a task…";
+      add.onkeydown = e => { if (e.key === "Enter" && add.value.trim()) { tasks.push({ content: add.value.trim(), detail: "" }); draw(); rows.querySelector(".pc-add").focus(); } };
+      rows.append(add);
+    }
+  };
+  const label = { proposed: "waiting for your approval", approved: "approved", rejected: "rejected" };
+  const paint = () => {
+    state.textContent = label[plan.status] || plan.status; state.className = "pc-s " + plan.status;
+    act.innerHTML = "";
+    if (plan.status === "proposed") {
+      const mode = el("select"); [["edit", "Edits"], ["auto", "Auto"], ["ask", "Review"]].forEach(([v, l]) => mode.append(new Option(l, v)));
+      mode.value = S.mode === "plan" ? (S.prevMode || "edit") : S.mode; mode.title = "Permission mode for the run";
+      const go = el("button", "primary", "Approve and run");
+      go.onclick = () => { if (!tasks.length) return; sendWS({ type: "plan_approve", tasks, mode: mode.value }); setMode(mode.value); setBusy(true); };
+      const rej = el("button", "", "Revise…");
+      rej.onclick = () => {
+        act.innerHTML = ""; const ta = el("textarea"); ta.placeholder = "What should change? The model plans again with your feedback."; ta.rows = 3;
+        const send = el("button", "primary", "Send feedback"), cancel = el("button", "", "Cancel");
+        send.onclick = () => { sendWS({ type: "plan_reject", feedback: ta.value }); setBusy(true); };
+        cancel.onclick = paint; act.append(ta, send, cancel); ta.focus();
+      };
+      act.append(mode, go, rej);
+    } else if (plan.status === "rejected" && plan.feedback) act.append(el("div", "pc-fb", "Feedback: " + plan.feedback));
+  };
+  box.append(head, why, rows, act); t.after.append(box);
+  plan.status = plan.status || "proposed";
+  draw(); paint();
+  S.planCard = {
+    update: m => { plan.status = m.status; if (m.tasks) { tasks.length = 0; m.tasks.forEach(x => tasks.push({ content: x.content, detail: x.detail || "" })); } if (m.feedback) plan.feedback = m.feedback; draw(); paint(); },
+  };
+}
+
 /* ============================================================ memory */
 const MEM_LABEL = { memory: "note", snippet: "snippet", skill: "skill" };
 async function memSave(item) {
@@ -679,6 +740,8 @@ function handle(m) {
       if (m.prefill) { $("#input").value = m.prefill; $("#input").focus(); }
       log.append(el("div", "empty", m.prefill ? "Branched before this message. Edit it and send." : "Branched. This is a copy; the original stays unchanged.")); log.scrollTop = log.scrollHeight; refresh(); break;
     case "mcp": renderMcp(m.servers); break;
+    case "plan_proposed": { const t = S.turns[m.user_idx] || S.turn; if (t) planCard(t, m.plan); S.draft = true; renderRail(S.todos); if (!S.planOpen) planShow(true); break; }
+    case "plan_status": { const c = S.planCard; if (c) c.update(m); S.draft = false; renderRail(S.todos); break; }
     case "suggest": { const t = S.turns[m.user_idx] || S.turn; if (t) suggestCard(t, m.items); break; }
     case "usage": {
       S.tok += m.out; const pct = m.prompt / m.ctx, i = $("#meter i");
@@ -714,7 +777,7 @@ function handle(m) {
 function renderSession(s) {
   setTimeout(() => SB.tab === "memory" ? loadMemory() : sbBadges(), 0);
   S.sid = s.id; S.root = s.root; $("#root").value = s.root; S.cards = {}; S.queue = []; S.cur = null; S.changed.clear();
-  S.meta = { parent: s.parent || null, note: s.note || "", pins: s.pins || [], titles: s.titles || {}, lineage: s.lineage || s.id, worktree: s.worktree && !s.worktree.removed ? s.worktree : null }; S.ultra = null;
+  S.draft = false; S.meta = { parent: s.parent || null, note: s.note || "", pins: s.pins || [], titles: s.titles || {}, lineage: s.lineage || s.id, worktree: s.worktree && !s.worktree.removed ? s.worktree : null }; S.ultra = null;
   $("#term").innerHTML = ""; for (const k in T) delete T[k]; termRun(); $("#term-wrap").hidden = true;
   log.innerHTML = ""; S.turns = []; S.turn = null; if (!s.messages.length) emptyState();
   for (const m of s.messages) {
@@ -733,9 +796,10 @@ function renderSession(s) {
         S.queue.push(id); toolCard(id, c.function.name, a, typeof lbl === "string" ? lbl.slice(0, 160) : "");
       }
       if (!calls.length && m.content) {
-        setAnswerText(t, m.content);
+        if (!m.plan) setAnswerText(t, m.content);
         if (m.summary) applySummary(t, m.summary);
         if (m.present) renderBlocks(t, m.present);
+        if (m.plan) { planCard(t, m.plan); S.draft = (m.plan.status || "proposed") === "proposed"; }
       }
     } else if (m.role === "tool") {
       const c = S.cards[S.queue.shift()];
@@ -784,6 +848,7 @@ function renderRail(items) {
   const x = el("button", "", "✕"); x.title = "Hide the board"; x.onclick = () => planShow(false, true); head.append(x);
   const prog = el("div", "pbar"), bar = el("i"); bar.style.width = (S.todos.length ? done / S.todos.length * 100 : 0) + "%"; prog.append(bar);
   box.append(head, prog);
+  if (S.draft) box.append(el("div", "kdraft", "Draft plan. Review it in the chat and approve to start."));
   const body = el("div", "pbody");
   const add = el("input", "add"); add.placeholder = "Add a task…"; add.value = keepAdd;
   add.onkeydown = e => { if (e.key === "Enter" && add.value.trim()) { send([...S.todos, { content: add.value.trim(), status: "pending" }]); add.value = ""; } };
@@ -1007,11 +1072,11 @@ function setBusy(b) {
   else { S.cur = null; S.think = null; $("#input").focus(); }
 }
 const MODE_TXT = { ask: "Confirms edits and commands", edit: "Confirms commands", auto: "No confirmations", plan: "Read-only: proposes a plan" };
-function setMode(v) { S.mode = v; document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); $("#h-mode").textContent = MODE_TXT[v]; }
+function setMode(v) { if (S.mode && S.mode !== "plan" && v === "plan") S.prevMode = S.mode; S.mode = v; document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); $("#h-mode").textContent = MODE_TXT[v]; }
 
 const SLASHES = [
   ["/new", "start a new session"], ["/ultra", "multi-agent run: review | research | design | audit  <task>"], ["/compact", "condense the conversation to free context (optional focus)"], ["/clear", "clear this session"], ["/mode", "ask | edit | auto"], ["/model", "switch model"],
-  ["/mcp", "reload MCP servers"], ["/remember", "save a note for future sessions: /remember <text>"], ["/memory", "show saved notes, snippets and skills"], ["/init", "write a KERF.md for this project"], ["/help", "list commands"],
+  ["/plan", "plan first: the model investigates and proposes a task board for approval  /plan <task>"], ["/mcp", "reload MCP servers"], ["/remember", "save a note for future sessions: /remember <text>"], ["/memory", "show saved notes, snippets and skills"], ["/init", "write a KERF.md for this project"], ["/help", "list commands"],
 ];
 function slashMenu(v) {
   const box = $("#slash"), items = v.startsWith("/") && !v.includes(" ") ? SLASHES.filter(s => s[0].startsWith(v)) : [];
@@ -1025,6 +1090,7 @@ function command(text) {
     case "/new": case "/clear": sendWS({ type: "new" }); break;
     case "/mode": if (["ask", "edit", "auto"].includes(arg)) { setMode(arg); note(`Mode: ${arg}`); } else note("Usage: /mode ask | edit | auto"); break;
     case "/model": { const o = [...$("#model").options].find(o => o.value.includes(arg)); if (o && arg) { $("#model").value = o.value; note(`Model: ${o.value}`); } else note("Models: " + [...$("#model").options].map(o => o.value).join(", ")); break; }
+    case "/plan": setMode("plan"); if (!arg) { note("Plan mode on. Describe the task; the model will investigate and propose a board for your approval."); break; } return arg;
     case "/mcp": sendWS({ type: "mcp_reload" }); note("Reloading MCP servers…"); break;
     case "/ultra": { const [pat, ...rest] = arg.split(/\s+/); if (!["review", "research", "design", "audit"].includes(pat)) { note("Usage: /ultra review|research|design|audit <task>"); break; }
       return `Use the Ultra tool with pattern "${pat}" for this task: ${rest.join(" ") || "the whole project"}`; }

@@ -401,6 +401,16 @@ async def ws(sock: WebSocket):
     ag.session = A.new_session(cfg["root"])
     task: asyncio.Task | None = None
     busy = lambda: bool(task and not task.done())
+
+    def start_turn(text, mode=None, images=()):
+        nonlocal task
+        ag.session["root"] = preview_root["path"] = cfg["root"]
+        task = asyncio.create_task(ag.turn(text, cfg["model"], bool(cfg["think"]), mode or cfg["mode"], cfg["num_ctx"],
+                                           bool(cfg.get("review", True)), False, list(images)))
+        ag.turn_task = task
+
+    def last_plan_message():
+        return next((m for m in reversed(ag.session["messages"]) if m.get("plan")), None)
     asyncio.create_task(ag.sync_mcp(cfg["root"]))
     try:
         while True:
@@ -420,6 +430,37 @@ async def ws(sock: WebSocket):
                     ag.turn(m["text"], cfg["model"], bool(cfg["think"]), cfg["mode"], cfg["num_ctx"],
                             bool(cfg.get("review", True)), False, [i for i in m.get("images", []) if isinstance(i, str)][:4]))
                 ag.turn_task = task
+            elif t in ("plan_approve", "plan_reject") and not busy():
+                pm = last_plan_message()
+                if not pm or pm["plan"].get("status") != "proposed":
+                    await send({"type": "notice", "text": "There is no plan waiting for approval."})
+                    continue
+                if t == "plan_approve":
+                    edited = []
+                    for it in (m.get("tasks") or [])[:20]:
+                        c = " ".join(str(it.get("content", "") if isinstance(it, dict) else it).split())[:300]
+                        if len(c) >= 2:
+                            edited.append({"content": c, "detail": " ".join(str(it.get("detail", "") if isinstance(it, dict) else "").split())[:600]})
+                    if not edited:
+                        await send({"type": "notice", "text": "The plan has no tasks left."})
+                        continue
+                    pm["plan"].update(status="approved", tasks=edited)
+                    ag.session["todos"] = [{"content": t_["content"], "status": "pending"} for t_ in edited]
+                    A.save(ag.session)
+                    await send({"type": "plan_status", "status": "approved", "tasks": edited})
+                    await send({"type": "todos", "items": ag.session["todos"]})
+                    mode = m.get("mode") if m.get("mode") in ("ask", "edit", "auto") else "edit"
+                    cfg["mode"] = mode
+                    detail = "\n".join(f"- {t_['content']}" + (f" ({t_['detail']})" if t_["detail"] else "") for t_ in edited)
+                    start_turn("The plan is approved. Carry it out task by task, in order, and keep the task list current with TodoWrite "
+                               "(exactly one task in_progress). Do not add scope.\n\nApproved plan:\n" + detail, mode)
+                else:
+                    fb = str(m.get("feedback", "")).strip()[:2000] or "The user did not like the plan. Rethink it."
+                    pm["plan"].update(status="rejected", feedback=fb)
+                    A.save(ag.session)
+                    await send({"type": "plan_status", "status": "rejected", "feedback": fb})
+                    start_turn("The plan was rejected. Feedback from the user:\n" + fb +
+                               "\n\nRevise the plan and submit it again with kanban_create_tasks.", "plan")
             elif t == "approve":
                 for a in AGENTS:              # the approval may belong to a turn started in another window
                     if m["id"] in a.pending:

@@ -18,7 +18,7 @@ from . import present as pres
 from . import checkpoint as cp
 from . import profiles
 from .audit import AUDIT_JS, format_report
-from . import devtools_code, devtools_run, memory as mem, copycheck
+from . import devtools_code, devtools_run, memory as mem, copycheck, planning
 from .devtools_run import READ_ACTIONS as GIT_READ
 from . import ultra as _ultra_mod
 from .ultra import Ultra
@@ -26,7 +26,7 @@ from .brand import NAME
 from .mcp import MCP, MCPError
 
 # Optional tool modules import dogear.tools, so they are registered here, not inside tools.py.
-for _m in (devtools_code, devtools_run, _ultra_mod, mem):
+for _m in (devtools_code, devtools_run, _ultra_mod, mem, planning):
     tools.TOOLS.update(_m.TOOLS)
 tools.SPECS[:] = [t[2] for t in tools.TOOLS.values()]
 
@@ -552,9 +552,9 @@ class Agent:
         if counts["memory"] or counts["snippets"]:
             await self.send({"type": "notice", "text": f"Memory: {counts['memory']} notes, {counts['snippets']} snippets"})
         if mode == "plan":
-            extra += ("\nPLAN MODE: you may only read and research. Do not change anything. Investigate the code and the request, "
-                      "then answer with a concrete plan: goal, files to change, steps in order, risks, how you will verify. "
-                      "The user will switch the mode to let you carry it out.\n")
+            extra += planning.PLAN_PROMPT
+            if prof.thinking:
+                think = True                              # the planning phase thinks, even if the user switched it off
         if s.get("todos"):
             mark = {"completed": "[x]", "in_progress": "[~]", "pending": "[ ]"}
             extra += "\nCurrent task list (the user may have edited it; keep it in sync with TodoWrite):\n" + "\n".join(
@@ -592,6 +592,10 @@ class Agent:
         try:
             await self.sync_mcp(s["root"])
             names = prof.tool_names(list(tools.TOOLS)) if prof.tools else []
+            if mode == "plan":                            # the phase decides what the model sees
+                names = [n for n in planning.PLAN_TOOLS if n in tools.TOOLS]
+            else:
+                names = [n for n in names if n != "kanban_create_tasks"]
             specs = [tools.TOOLS[n][2] for n in names] + (self.mcp.specs() if prof.tools else [])
             allowed = set(names) | {sp["function"]["name"] for sp in self.mcp.specs()}
             for _ in range(MAX_STEPS):
@@ -680,12 +684,15 @@ class Agent:
                             continue
                     stripped = content.strip()
                     unfinished = bool(info["tools"] and 8 < len(stripped) < 500 and not re.search(r"[.!?…:;)\]}\"'`>*_|]\s*$", stripped))
-                    if pasted or announced or refused or unfinished:
+                    plan_missing = mode == "plan" and not ctx.plan and not _review
+                    if pasted or announced or refused or unfinished or plan_missing:
                         # small models paste code into the chat, or announce an action and then stop without calling a tool
                         nudges += 1
                         profiles.note_issue(model, "announced")
                         s["messages"].append({"role": "user", "review": True, "content":
-                                              ("You pasted code into the chat. Do not do that. Create the file now with the Write tool at the "
+                                              ("This is the planning phase. Do not answer in prose: finish by calling kanban_create_tasks with your "
+                                               "reasoning and the task list. If you still need information, read it first, then call the tool." if plan_missing else
+                                               "You pasted code into the chat. Do not do that. Create the file now with the Write tool at the "
                                                "path from the request, then verify it (run it, or open it in the browser)." if pasted else
                                                "You DO have tools and full access to the project: Glob, Grep, Read, Write, Edit, Bash. "
                                                "Use them now to do the task. Do not explain, call a tool." if refused else
@@ -703,6 +710,12 @@ class Agent:
                     name, args = fn["name"], fn.get("arguments") or {}
                     if isinstance(args, str):
                         args = json.loads(args or "{}")
+                    if mode == "plan" and name not in allowed:       # the phase decides what exists, not the model
+                        s["messages"].append({"role": "tool", "tool_name": name, "ok": False, "meta": {},
+                                              "content": f"{name} is not available in the planning phase. Investigate with Read, Grep, LS "
+                                                         "or Glob, then call kanban_create_tasks. Execution comes after the user approves."})
+                        consec += 1
+                        continue
                     cid = uuid.uuid4().hex[:8]
                     sig = f"{name}:{json.dumps(args, sort_keys=True)}"
                     recent.append(sig)
@@ -770,6 +783,16 @@ class Agent:
                     elif name in ("Bash", "KillBash"):
                         await self.send({"type": "fs"})
                     save(s)
+                if ctx.plan:
+                    # planning phase done: the board goes to the user for approval, nothing is executed yet
+                    plan = ctx.plan
+                    body = plan["reasoning"] + "\n\n" + "\n".join(f"{i}. {t['content']}" for i, t in enumerate(plan["tasks"], 1))
+                    s["messages"].append({"role": "assistant", "content": body, "plan": plan})
+                    final_idx = len(s["messages"]) - 1
+                    s["todos"] = ctx.todos
+                    await self.send({"type": "todos", "items": ctx.todos})
+                    await self.send({"type": "plan_proposed", "plan": plan, "user_idx": user_idx})
+                    break
                 if abort:
                     break
             else:
@@ -840,7 +863,8 @@ class Agent:
             await self.send({"type": "done"})
             if final_idx is not None and s["messages"][final_idx].get("content"):
                 hints = ", ".join(sorted(info["tools"])) or "no tools"
-                asyncio.create_task(self._present(s, final_idx, user_idx, orig_text, s["messages"][final_idx]["content"], hints))
+                if not s["messages"][final_idx].get("plan"):
+                    asyncio.create_task(self._present(s, final_idx, user_idx, orig_text, s["messages"][final_idx]["content"], hints))
                 asyncio.create_task(self._name(s))
                 if nsteps >= 5 and mode != "plan" and not cancelled and prof.tier != "small" and (info["changes"] or info["commands"]):
                     asyncio.create_task(self._suggest(ctx.root, user_idx, orig_text, s["messages"][final_idx]["content"],

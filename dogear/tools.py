@@ -92,6 +92,7 @@ class Ctx:
         self.image = None  # base64 screenshot to show the model on the next step
         self.subagent = self.skill = self.ask_user = self.ultra = None   # wired by the agent
         self.todos: list[dict] = []
+        self.plan = None          # set by kanban_create_tasks in the planning phase
         self.call_id = ""
         self.meta: dict = {}
 

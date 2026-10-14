@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 HERE = Path(__file__).resolve().parent
 BASE = HERE.parent / "projects" / "bench"
 RESULTS = HERE / os.environ.get("BENCH_OUT", "bench_results.json")
+PHASED = os.environ.get("BENCH_PHASED") == "1"      # plan phase (read-only, fills the board) -> approve -> execute
 TASK_FILTER = set(filter(None, os.environ.get("BENCH_TASKS", "").split(",")))
 URL, ORIGIN = "ws://127.0.0.1:7870/ws", "http://127.0.0.1:7870"
 TIMEOUT = 480
@@ -220,9 +221,9 @@ async def run_agent(model, d, prompt):
     stats = {"steps": 0, "tool_errors": 0, "tps": [], "error": ""}
     t0 = time.time()
     async with websockets.connect(URL, max_size=None, origin=ORIGIN) as ws:
-        await ws.send(json.dumps({"type": "user", "text": prompt, "model": model, "think": False, "mode": "auto",
+        await ws.send(json.dumps({"type": "user", "text": prompt, "model": model, "think": False, "mode": "plan" if PHASED else "auto",
                                   "root": str(d), "num_ctx": 32768, "review": False}))
-        stopped = False
+        stopped, plan, approved = False, None, False
         while True:
             left = TIMEOUT - (time.time() - t0)
             if left <= 0 and not stopped:
@@ -236,7 +237,15 @@ async def run_agent(model, d, prompt):
             elif t == "result" and not m["ok"]: stats["tool_errors"] += 1
             elif t == "usage": stats["tps"].append(m["tps"])
             elif t == "error": stats["error"] = m["text"][:80]
-            elif t == "done": break
+            elif t == "plan_proposed": plan = m["plan"]; stats["plan_tasks"] = len(plan["tasks"]); stats["plan_secs"] = int(time.time() - t0)
+            elif t == "done":
+                if PHASED and plan and not approved:        # phase 1 finished: approve the board unchanged and run it
+                    approved = True
+                    await ws.send(json.dumps({"type": "plan_approve", "tasks": plan["tasks"], "mode": "auto"}))
+                    continue
+                if PHASED and not plan:
+                    stats["error"] = stats["error"] or "no plan was produced"
+                break
     stats["secs"] = int(time.time() - t0)
     stats["tps"] = round(sum(stats["tps"]) / len(stats["tps"]), 1) if stats["tps"] else 0
     return stats
