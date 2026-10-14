@@ -18,7 +18,7 @@ from . import present as pres
 from . import checkpoint as cp
 from . import profiles
 from .audit import AUDIT_JS, format_report
-from . import devtools_code, devtools_run, memory as mem, copycheck, planning
+from . import devtools_code, devtools_run, memory as mem, copycheck, planning, library
 from .devtools_run import READ_ACTIONS as GIT_READ
 from . import ultra as _ultra_mod
 from .ultra import Ultra
@@ -26,7 +26,7 @@ from .brand import NAME
 from .mcp import MCP, MCPError
 
 # Optional tool modules import dogear.tools, so they are registered here, not inside tools.py.
-for _m in (devtools_code, devtools_run, _ultra_mod, mem, planning):
+for _m in (devtools_code, devtools_run, _ultra_mod, mem, planning, library):
     tools.TOOLS.update(_m.TOOLS)
 tools.SPECS[:] = [t[2] for t in tools.TOOLS.values()]
 
@@ -506,6 +506,7 @@ class Agent:
                 await self.send({"type": "notice", "text": f"Could not compact automatically: {e}"})
         ctx.subagent = lambda d, p, f: self._subagent(ctx, d, p, f, model, num_ctx)
         ctx.skill = lambda n: self._skill(n, ctx.root)
+        ctx.library = lambda q, k: library.search(self.client, llm.URL, q, k)
         ctx.ultra = lambda pattern, task, scope: self._ultra(ctx, model, num_ctx, pattern, task, scope)
         ctx.ask_user = lambda qs: self._ask_user(ctx.call_id, qs)
         names = []
@@ -553,6 +554,14 @@ class Agent:
             await self.send({"type": "notice", "text": f"Memory: {counts['memory']} notes, {counts['snippets']} snippets"})
         if mode == "plan":
             extra += planning.PLAN_PROMPT
+            try:                                          # proven solutions go into the planning phase without relying on the model to ask
+                hits = await library.search(self.client, llm.URL, text, 3)
+            except Exception:
+                hits = []
+            if hits:
+                extra += ("\nProven solutions from earlier runs the user rated as good (reuse them where they fit; library_search finds more):\n"
+                          + library.format_hits(hits)[:5000] + "\n")
+                await self.send({"type": "notice", "text": f"Library: {len(hits)} matching solution{'s' if len(hits) != 1 else ''}"})
             if prof.thinking:
                 think = True                              # the planning phase thinks, even if the user switched it off
         if s.get("todos"):

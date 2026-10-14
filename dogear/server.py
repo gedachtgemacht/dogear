@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import time
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,6 +20,7 @@ from . import checkpoint as cpt
 from . import worktrees as W
 from . import llm, profiles, tools
 from . import memory as mem
+from . import library
 from .brand import NAME
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -223,6 +225,20 @@ async def memory_delete(session: str, kind: str, name: str, scope: str = ""):
         return mem.delete(_mem_root(session), kind, name, scope or None)
     except mem.MemoryError_ as e:
         raise HTTPException(404, str(e))
+
+
+@app.get("/api/library")
+async def library_list(q: str = "", limit: int = 100):
+    if q.strip():
+        return await library.search(client, llm.URL, q, min(max(limit, 1), 50))
+    return library.entries(min(max(limit, 1), 300))
+
+
+@app.delete("/api/library/{entry_id}")
+async def library_delete(entry_id: int):
+    if not library.delete(entry_id):
+        raise HTTPException(404)
+    return {"ok": True}
 
 
 @app.get("/api/branches")
@@ -461,6 +477,45 @@ async def ws(sock: WebSocket):
                     await send({"type": "plan_status", "status": "rejected", "feedback": fb})
                     start_turn("The plan was rejected. Feedback from the user:\n" + fb +
                                "\n\nRevise the plan and submit it again with kanban_create_tasks.", "plan")
+            elif t == "rate":
+                # rating the finished run is the gate for the library: only good runs may teach
+                pos = A.user_positions(ag.session["messages"])
+                i = int(m.get("turn", -1))
+                if not (0 <= i < len(pos)):
+                    continue
+                end = pos[i + 1] if i + 1 < len(pos) else len(ag.session["messages"])
+                msgs = ag.session["messages"]
+                sm_msg = next((x for x in reversed(msgs[pos[i]:end]) if x.get("summary")), None)
+                if not sm_msg:
+                    await send({"type": "notice", "text": "That turn has no finished run to rate."})
+                    continue
+                val = 1 if float(m.get("value", 0)) > 0 else -1
+                prev = sm_msg.get("rating") or {}
+                rating = {"value": val, "note": str(m.get("note", ""))[:500], "at": time.time(), "extracted": bool(prev.get("extracted"))}
+                sm_msg["rating"] = rating
+                sm_msg["summary"]["rating"] = rating
+                A.save(ag.session)
+                await send({"type": "rated", "turn": i, "rating": rating})
+                if val > 0 and not rating["extracted"]:
+                    rating["extracted"] = True
+                    A.save(ag.session)
+                    request = msgs[pos[i]]["content"]
+                    changed = [c["path"] for c in sm_msg["summary"].get("changes", [])]
+                    root_, model_ = ag.session["root"], cfg["model"]
+
+                    async def learn(i=i, request=request, answer=sm_msg.get("content", ""), changed=changed, root_=root_, model_=model_, rating=rating, sess=ag.session):
+                        try:
+                            items = await library.extract(client, llm.URL, model_, Path(root_), request, answer, changed)
+                            saved = []
+                            for it in items:
+                                r = await library.add(client, llm.URL, it)
+                                saved.append({"id": r["id"], "problem": it["problem"], "language": it["language"], "replaced": r["replaced"]})
+                            rating["saved"] = saved
+                            A.save(sess)
+                            await send({"type": "library_saved", "turn": i, "entries": saved})
+                        except Exception as e:
+                            await send({"type": "library_saved", "turn": i, "entries": [], "error": str(e)[:120]})
+                    asyncio.create_task(learn())
             elif t == "approve":
                 for a in AGENTS:              # the approval may belong to a turn started in another window
                     if m["id"] in a.pending:

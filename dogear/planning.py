@@ -9,7 +9,7 @@ MAX_TASKS = 12
 
 # tools visible in the planning phase
 PLAN_TOOLS = ("Read", "LS", "Glob", "Grep", "Outline", "FindSymbol", "WebSearch", "WebFetch", "Skill", "Recall",
-              "Task", "ViewImage", "AskUser", "browser_navigate", "browser_read", "browser_screenshot", "browser_console",
+              "Task", "ViewImage", "AskUser", "library_search", "browser_navigate", "browser_read", "browser_screenshot", "browser_console",
               "kanban_create_tasks")
 
 PLAN_PROMPT = (

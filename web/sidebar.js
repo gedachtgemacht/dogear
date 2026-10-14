@@ -1,7 +1,7 @@
 /* ============================================================ sidebar
    One tabbed drawer instead of one long scroll: Files | Sessions | Memory | MCP.
    Loaded before app.js; this file only declares things, it reaches S, el, $, api ... when its functions run. */
-const SB = { tab: "files", view: "changed", fq: "", sq: "", mk: "all", mq: "", mem: [], mcp: [], exp: new Map(), older: false };
+const SB = { lib: [], tab: "files", view: "changed", fq: "", sq: "", mk: "all", mq: "", mem: [], mcp: [], exp: new Map(), older: false };
 const sbStore = {
   get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } },
@@ -199,20 +199,47 @@ function renderSessions() {
 const renderHistory = renderSessions;
 
 /* ---------------------------------------------------------------- memory */
+async function loadLibrary() {
+  try {
+    const r = await fetch("/api/library"); if (!r.ok) return;
+    SB.lib = await r.json();
+    if (SB.tab === "memory") renderMemory(); else sbBadges();
+  } catch { /* offline */ }
+}
 async function loadMemory() {
+  loadLibrary();
   try {
     const r = await fetch("/api/memory?id=" + encodeURIComponent(S.sid || "")); if (!r.ok) return;
     SB.mem = (await r.json()).items;
     if (SB.tab === "memory") renderMemory(); else sbBadges();
   } catch { /* offline */ }
 }
+function renderLibrary(box, q) {
+  const rows = SB.lib.filter(e => !q || (e.problem + " " + e.solution + " " + e.language + " " + e.framework + " " + e.project).toLowerCase().includes(q));
+  box.innerHTML = "";
+  if (!SB.lib.length) { box.append(el("div", "dempty", "The library is empty. Rate a finished run as good: reusable code from it is saved here and offered in later plans.")); return; }
+  if (!rows.length) box.append(el("div", "dempty", "Nothing matches."));
+  for (const e of rows) {
+    const row = el("div", "mem-i"), head = el("div", "mem-h");
+    head.append(el("b", "", e.problem));
+    const x = el("button", "mini", "✕"); x.title = "Delete from the library";
+    x.onclick = async ev => { ev.stopPropagation(); await fetch(`/api/library/${e.id}`, { method: "DELETE" }); loadLibrary(); };
+    head.append(x);
+    const meta = el("div", "lib-meta"); [e.language, e.framework, e.project, new Date(e.updated * 1000).toLocaleDateString()].filter(Boolean).forEach(v => meta.append(el("span", "chip", v)));
+    if (e.uses > 1) meta.append(el("span", "chip", `used ${e.uses}x`));
+    const body = el("pre", "mem-b", e.solution); body.hidden = true;
+    head.onclick = () => body.hidden = !body.hidden;
+    row.append(head, meta, body); box.append(row);
+  }
+}
 function renderMemory() {
   const box = $("#mlist"), items = SB.mem, q = SB.mq.trim().toLowerCase();
   document.querySelectorAll("#mseg button").forEach(b => {
     b.classList.toggle("on", b.dataset.v === SB.mk);
-    const n = b.dataset.v === "all" ? items.length : items.filter(e => e.kind === b.dataset.v).length;
+    const n = b.dataset.v === "all" ? items.length : b.dataset.v === "library" ? SB.lib.length : items.filter(e => e.kind === b.dataset.v).length;
     b.dataset.n = n ? String(n) : "";
   });
+  if (SB.mk === "library") { renderLibrary(box, q); sbBadges(); return; }
   const rows = items.filter(e => (SB.mk === "all" || e.kind === SB.mk) && (!q || (e.name + " " + e.body + " " + e.tags.join(" ")).toLowerCase().includes(q)));
   box.innerHTML = "";
   if (!items.length) { box.append(el("div", "dempty", "Nothing saved yet. The agent saves what later sessions need; add notes yourself with ＋ or /remember.")); sbBadges(); return; }

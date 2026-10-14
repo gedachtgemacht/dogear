@@ -130,6 +130,8 @@ function applySummary(t, sm) {
       sendWS({ type: "undo", root: sm.checkpoint.root, to: sm.checkpoint.before }); u.remove(); };
     t.after.append(u);
   }
+  t.after.querySelectorAll(".rate").forEach(n => n.remove());
+  if (sm.steps && !(S.mode === "plan" && !sm.changes?.length)) rateBar(t, sm.rating);
   // deterministic context cards: what changed, where it came from
   t.after.querySelectorAll(".changes, .sources").forEach(n => n.remove());
   if (sm.changes?.length) {
@@ -588,6 +590,35 @@ function termRun() { const n = Object.values(T).filter(t => t.live && t.bg).leng
 /* ============================================================ left column */
 let treeTimer = 0;
 const scheduleTree = () => { clearTimeout(treeTimer); treeTimer = setTimeout(renderTree, 150); };
+/* ============================================================ rating (phase 4): a good run may teach the library */
+function rateBar(t, rating) {
+  const box = el("div", "rate"); t.rateEl = box; t.after.append(box);
+  const paint = (r, saved) => {
+    box.innerHTML = "";
+    if (r) {
+      box.append(el("span", `rt ${r.value > 0 ? "good" : "bad"}`, r.value > 0 ? "Rated good" : "Rated not good"));
+      if (r.value > 0 && !saved && r.saved) saved = { entries: r.saved };
+      if (r.value > 0) box.append(el("span", "rs", saved ? (saved.error ? "Could not save snippets: " + saved.error : saved.entries.length
+        ? `Saved to the library: ${saved.entries.map(e => e.problem.slice(0, 60) + (e.replaced ? " (updated)" : "")).join(" · ")}` : "No reusable snippet found in this run.") : "Looking for reusable code…"));
+      else if (r.note) box.append(el("span", "rs", r.note));
+      const ch = el("button", "link", "Change"); ch.onclick = () => paint(null); box.append(ch);
+      return;
+    }
+    box.append(el("span", "rl", "Was this run good?"));
+    const up = el("button", "", "Good"), dn = el("button", "", "Not good");
+    up.title = "Good runs teach the library: reusable code is saved and offered in later plans";
+    up.onclick = () => { sendWS({ type: "rate", turn: t.i, value: 1 }); };
+    dn.onclick = () => {
+      box.innerHTML = ""; const inp = el("input"); inp.placeholder = "What went wrong? (optional)";
+      const send = el("button", "", "Send"); send.onclick = () => sendWS({ type: "rate", turn: t.i, value: -1, note: inp.value });
+      inp.onkeydown = e => { if (e.key === "Enter") send.click(); };
+      box.append(inp, send); inp.focus();
+    };
+    box.append(up, dn);
+  };
+  t.ratePaint = paint; paint(rating);
+}
+
 /* ============================================================ plan approval (phase 2) */
 function planCard(t, plan) {
   t.after.querySelectorAll(".plancard").forEach(n => n.remove());
@@ -740,6 +771,8 @@ function handle(m) {
       if (m.prefill) { $("#input").value = m.prefill; $("#input").focus(); }
       log.append(el("div", "empty", m.prefill ? "Branched before this message. Edit it and send." : "Branched. This is a copy; the original stays unchanged.")); log.scrollTop = log.scrollHeight; refresh(); break;
     case "mcp": renderMcp(m.servers); break;
+    case "rated": { const t = S.turns[m.turn]; if (t?.ratePaint) t.ratePaint(m.rating, null); break; }
+    case "library_saved": { const t = S.turns[m.turn]; if (t?.ratePaint && t.rateEl) t.ratePaint({ value: 1 }, m); sbBadges(); if (SB.tab === "memory") loadMemory(); break; }
     case "plan_proposed": { const t = S.turns[m.user_idx] || S.turn; if (t) planCard(t, m.plan); S.draft = true; renderRail(S.todos); if (!S.planOpen) planShow(true); break; }
     case "plan_status": { const c = S.planCard; if (c) c.update(m); S.draft = false; renderRail(S.todos); break; }
     case "suggest": { const t = S.turns[m.user_idx] || S.turn; if (t) suggestCard(t, m.items); break; }
