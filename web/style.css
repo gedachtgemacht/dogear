@@ -516,13 +516,6 @@ button.undo:hover { border-color: var(--bad); color: var(--bad); }
 .mem-row { display: flex; gap: 6px; } .mem-row select { flex: 1; }
 .snip-f { display: inline-flex; gap: 4px; } .snip-f input { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font: 12px var(--ui); width: 150px; }
 .snip-ok { font-size: 12px; color: var(--ok); margin-left: 8px; }
-.ibx { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: var(--panel); }
-.ibx-h { display: flex; gap: 8px; align-items: center; font-size: 13px; } .ibx-h b { font-weight: 500; }
-.ibx-b { margin-top: 4px; font-size: 13px; color: var(--ink2); white-space: pre-wrap; overflow-wrap: anywhere; }
-.ibx-b.code { font: 12px/1.5 var(--mono); }
-.ibx-a { display: flex; gap: 6px; margin-top: 8px; }
-.ibx-a button { font: 12.5px var(--ui); padding: 3px 10px; border-radius: 4px; border: 1px solid var(--line); background: var(--panel2); color: var(--ink); cursor: pointer; }
-.ibx-a button:hover { border-color: var(--accent); } .ibx-a .ghost { background: none; color: var(--mute); }
 #memform button { font: 12.5px var(--ui); padding: 3px 12px; border-radius: 4px; border: 1px solid var(--line); background: var(--panel2); color: var(--ink); cursor: pointer; }
 #memform button:hover { border-color: var(--accent); }
 
@@ -635,6 +628,7 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 .rt { font-weight: 600; } .rt.good { color: var(--ok); } .rt.bad { color: var(--bad); } .rs { color: var(--ink2); }
 .lib-meta { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 4px 4px; }
 
-#menu.dot { position: relative; } #menu.dot::after { content: ""; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-#mlist .ibx { margin: 0 2px 8px; }
-.rate { opacity: .6; transition: opacity .15s; } .rate:hover, .rate:focus-within { opacity: 1; }
+#mlist .rate { opacity: .6; transition: opacity .15s; } .rate:hover, .rate:focus-within { opacity: 1; }
+.autosaved { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font: 12px var(--ui); color: var(--mute); }
+.autosaved button.link { border: 0; background: none; color: var(--mute); cursor: pointer; text-decoration: underline; padding: 0; font: inherit; }
+.autosaved button.link:hover { color: var(--ink); }

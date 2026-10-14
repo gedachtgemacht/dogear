@@ -954,8 +954,17 @@ class Agent:
                 except ValueError:
                     pass
             items = await mem.suggest(self.client, llm.URL, helper, root, request, answer, rels, [str(c.get("cmd", "")) if isinstance(c, dict) else str(c) for c in commands])
-            if items:
-                await self.send({"type": "suggest", "user_idx": user_idx, "items": items})
+            saved = []
+            for it in items:
+                if it["kind"] == "skill":                  # skills steer later runs: never saved without the user
+                    continue
+                try:
+                    r = mem.apply(root, {**it, "source": "auto"})
+                    saved.append({"kind": it["kind"], "name": it["name"], "id": r["id"], "scope": r["scope"], "updated": r["updated"]})
+                except mem.MemoryError_:
+                    continue
+            if saved:
+                await self.send({"type": "auto_saved", "user_idx": user_idx, "items": saved})
         except Exception:
             pass
 

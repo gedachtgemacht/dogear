@@ -705,6 +705,19 @@ function snippetForm(btn, c) {
   name.onkeydown = e => { if (e.key === "Enter") ok.click(); };
   w.append(name, ok); btn.replaceWith(w); name.focus();
 }
+/* notes and snippets the harness saved by itself after a longer run: one quiet line with Undo */
+function autoSavedLine(t, items) {
+  t.after.querySelectorAll(".autosaved").forEach(n => n.remove());
+  const box = el("div", "autosaved"), what = items.map(i => i.name).join(" · ");
+  box.append(el("span", "", `Saved to memory: ${what}`));
+  const undo = el("button", "link", "Undo");
+  undo.onclick = async () => {
+    await Promise.all(items.map(i => fetch(`/api/memory?session=${encodeURIComponent(S.sid || "")}&kind=${i.kind}&name=${encodeURIComponent(i.id)}&scope=${i.scope}`, { method: "DELETE" })));
+    box.innerHTML = ""; box.append(el("span", "", "Removed again.")); loadMemory();
+  };
+  box.append(undo); t.after.append(box);
+}
+
 /* ============================================================ events */
 function handle(m) {
   if (m.type === "frame" || m.type.startsWith("b_")) return browserEvent(m);
@@ -759,7 +772,7 @@ function handle(m) {
     case "library_saved": { const t = S.turns[m.turn]; if (t?.ratePaint && t.rateEl) t.ratePaint({ value: 1 }, m); sbBadges(); if (SB.tab === "memory") loadMemory(); break; }
     case "plan_proposed": { const t = S.turns[m.user_idx] || S.turn; if (t) planCard(t, m.plan); S.draft = true; renderRail(S.todos); if (!S.planOpen) planShow(true); break; }
     case "plan_status": { const c = S.planCard; if (c) c.update(m); S.draft = false; renderRail(S.todos); break; }
-    case "suggest": inboxAdd(m.items); break;
+    case "auto_saved": { const t = S.turns[m.user_idx] || S.turn; if (t) autoSavedLine(t, m.items); loadMemory(); break; }
     case "usage": {
       S.tok += m.out; const pct = m.prompt / m.ctx, i = $("#meter i");
       i.style.width = Math.min(100, pct * 100) + "%"; i.className = pct > .85 ? "hot" : pct > .6 ? "warn" : "";

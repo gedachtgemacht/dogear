@@ -72,7 +72,7 @@ def _entry(f: Path, kind: str, scope: str) -> dict | None:
     return {"kind": kind, "scope": scope, "id": f.stem, "name": meta.get("name", f.stem), "description": meta.get("description", ""),
             "type": meta.get("type", ""), "language": meta.get("language", ""), "tags": [t.strip() for t in meta.get("tags", "").split(",") if t.strip()],
             "triggers": [t.strip() for t in meta.get("triggers", "").split(",") if t.strip()],
-            "created": meta.get("created", ""), "body": body, "mtime": mtime}
+            "created": meta.get("created", ""), "source": meta.get("source", ""), "body": body, "mtime": mtime}
 
 
 def entries(root: Path, kinds=("memory", "snippet", "skill")) -> list[dict]:
@@ -121,6 +121,8 @@ def save(root: Path, kind: str, name: str, body: str, scope: str = "project", **
         if not trig:
             raise MemoryError_("a skill needs triggers: the words in a request that should load it")
         fm["triggers"] = ", ".join(trig[:12])
+    if meta.get("source"):
+        fm["source"] = _one_line(meta["source"], 20)          # "auto" marks notes the harness saved by itself
     fm["created"] = time.strftime("%Y-%m-%d")
     head = "\n".join(f"{k}: {v}" for k, v in fm.items() if v != "")
     f.write_text(f"---\n{head}\n---\n{body}\n")
@@ -375,5 +377,5 @@ async def suggest(client, url: str, helper: str, root: Path, request: str, answe
 def apply(root: Path, item: dict) -> dict:
     """Store a suggestion or a hand-written entry from the UI."""
     kind, scope = item.get("kind"), item.get("scope") or "project"
-    meta = {k: item.get(k) for k in ("type", "description", "language", "tags", "triggers")}
+    meta = {k: item.get(k) for k in ("type", "description", "language", "tags", "triggers", "source")}
     return save(root, kind, str(item.get("name", "")), item.get("content", ""), scope, **meta)

@@ -140,7 +140,12 @@ async def main():
     (OUT / label).mkdir(parents=True, exist_ok=True)
     b = Browser(Path(tempfile.mkdtemp())); await b.ensure()
     rows = []
+    prev = OUT / label / "results.json"
+    if mode == "run" and prev.exists() and not os.environ.get("DESIGN_FRESH"):
+        rows = [r for r in json.loads(prev.read_text()) if r["id"] in IDS[:n]]          # resume: keep the finished briefs
     for i in IDS[:n]:
+        if any(r["id"] == i for r in rows):
+            continue
         t = TASKS[i]
         if mode == "gold":
             page, st = DS / "solutions" / f"{i}.html", {"secs": 0}
