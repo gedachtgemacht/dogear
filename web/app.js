@@ -604,7 +604,7 @@ function rateBar(t, rating) {
       const ch = el("button", "link", "Change"); ch.onclick = () => paint(null); box.append(ch);
       return;
     }
-    box.append(el("span", "rl", "Was this run good?"));
+    box.append(el("span", "rl", "Rate this run"));
     const up = el("button", "", "Good"), dn = el("button", "", "Not good");
     up.title = "Good runs teach the library: reusable code is saved and offered in later plans";
     up.onclick = () => { sendWS({ type: "rate", turn: t.i, value: 1 }); };
@@ -683,7 +683,7 @@ function planCard(t, plan) {
 /* ============================================================ memory */
 const MEM_LABEL = { memory: "note", snippet: "snippet", skill: "skill" };
 async function memSave(item) {
-  const r = await fetch("/api/memory", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...item, session: S.sid }) });
+  const r = await fetch("/api/memory", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: S.sid, ...item }) });
   if (!r.ok) { note("Not saved: " + ((await r.json().catch(() => ({}))).detail || r.status)); return false; }
   loadMemory(); return true;
 }
@@ -705,22 +705,6 @@ function snippetForm(btn, c) {
   name.onkeydown = e => { if (e.key === "Enter") ok.click(); };
   w.append(name, ok); btn.replaceWith(w); name.focus();
 }
-function suggestCard(t, items) {
-  t.after.querySelectorAll(".suggest").forEach(n => n.remove());
-  const box = el("div", "suggest"); box.append(el("div", "lbl", "Worth remembering?"));
-  for (const it of items) {
-    const r = el("div", "sg"), h = el("div", "sg-h");
-    h.append(el("span", "mem-k " + it.kind, MEM_LABEL[it.kind]), el("b", "", it.name));
-    const body = el("div", "sg-b"); body.textContent = it.kind === "snippet" ? it.content.split("\n").slice(0, 6).join("\n") : it.content;
-    if (it.kind === "snippet") body.classList.add("code");
-    const save = el("button", "", "Save"), no = el("button", "ghost", "Dismiss");
-    save.onclick = async () => { if (await memSave(it)) { r.remove(); if (!box.querySelector(".sg")) box.remove(); } };
-    no.onclick = () => { r.remove(); if (!box.querySelector(".sg")) box.remove(); };
-    r.append(h, body); const a = el("div", "sg-a"); a.append(save, no); r.append(a); box.append(r);
-  }
-  t.after.append(box);
-}
-
 /* ============================================================ events */
 function handle(m) {
   if (m.type === "frame" || m.type.startsWith("b_")) return browserEvent(m);
@@ -775,7 +759,7 @@ function handle(m) {
     case "library_saved": { const t = S.turns[m.turn]; if (t?.ratePaint && t.rateEl) t.ratePaint({ value: 1 }, m); sbBadges(); if (SB.tab === "memory") loadMemory(); break; }
     case "plan_proposed": { const t = S.turns[m.user_idx] || S.turn; if (t) planCard(t, m.plan); S.draft = true; renderRail(S.todos); if (!S.planOpen) planShow(true); break; }
     case "plan_status": { const c = S.planCard; if (c) c.update(m); S.draft = false; renderRail(S.todos); break; }
-    case "suggest": { const t = S.turns[m.user_idx] || S.turn; if (t) suggestCard(t, m.items); break; }
+    case "suggest": inboxAdd(m.items); break;
     case "usage": {
       S.tok += m.out; const pct = m.prompt / m.ctx, i = $("#meter i");
       i.style.width = Math.min(100, pct * 100) + "%"; i.className = pct > .85 ? "hot" : pct > .6 ? "warn" : "";

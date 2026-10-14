@@ -1,7 +1,7 @@
 /* ============================================================ sidebar
    One tabbed drawer instead of one long scroll: Files | Sessions | Memory | MCP.
    Loaded before app.js; this file only declares things, it reaches S, el, $, api ... when its functions run. */
-const SB = { lib: [], tab: "files", view: "changed", fq: "", sq: "", mk: "all", mq: "", mem: [], mcp: [], exp: new Map(), older: false };
+const SB = { inbox: [], lib: [], tab: "files", view: "changed", fq: "", sq: "", mk: "all", mq: "", mem: [], mcp: [], exp: new Map(), older: false };
 const sbStore = {
   get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } },
@@ -18,7 +18,31 @@ function shortPath(p) {
 }
 const plural2 = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
+/* Suggestions from the helper model land here, not in the chat: nothing is saved until you press Save. */
+function inboxLoad() {
+  try { SB.inbox = JSON.parse(sessionStorage.getItem("dogear-inbox") || "[]"); } catch { SB.inbox = []; }
+}
+function inboxSave() { try { sessionStorage.setItem("dogear-inbox", JSON.stringify(SB.inbox.slice(-30))); } catch { /* private window */ } }
+function inboxAdd(items) {
+  const sid = S.sid;
+  for (const it of items || []) if (!SB.inbox.some(x => x.kind === it.kind && x.name === it.name && x.session === sid)) SB.inbox.push({ ...it, session: sid });
+  inboxSave(); sbBadges();
+  if (SB.tab === "memory" && !$("#drawer").hidden) renderMemory();
+}
+function inboxCard(it) {
+  const r = el("div", "ibx"), h = el("div", "ibx-h");
+  h.append(el("span", `mem-k ${it.kind}`, MEM_LABEL[it.kind] || it.kind), el("b", "", it.name));
+  const body = el("div", "ibx-b" + (it.kind === "snippet" ? " code" : ""));
+  body.textContent = it.kind === "snippet" ? it.content.split("\n").slice(0, 6).join("\n") : it.content;
+  const a = el("div", "ibx-a"), save = el("button", "", "Save"), no = el("button", "ghost", "Dismiss");
+  const drop = () => { SB.inbox = SB.inbox.filter(x => x !== it); inboxSave(); renderMemory(); };
+  save.onclick = async () => { if (await memSave(it)) drop(); };
+  no.onclick = drop;
+  a.append(save, no); r.append(h, body, a);
+  return r;
+}
 function sbInit() {
+  inboxLoad();
   SB.tab = sbStore.get("dogear-sb-tab", "files"); SB.view = sbStore.get("dogear-sb-view", "changed");
   document.querySelectorAll("#dtabs button").forEach(b => b.onclick = () => sbTab(b.dataset.t));
   document.querySelectorAll("#fseg button").forEach(b => b.onclick = () => { SB.view = b.dataset.v; sbStore.set("dogear-sb-view", SB.view); renderFiles(); });
@@ -45,7 +69,8 @@ function sbBadges() {
   const set = (id, n, cls = "") => { const i = $(id); if (!i) return; i.textContent = n ? String(n) : ""; i.className = cls; };
   set("#bd-files", S.changed.size);
   set("#bd-sessions", live || (S.st?.sessions || []).length, live ? "live" : "");
-  set("#bd-memory", SB.mem.length);
+  set("#bd-memory", SB.inbox.length ? SB.inbox.length : SB.mem.length, SB.inbox.length ? "live" : "");
+  $("#menu")?.classList.toggle("dot", SB.inbox.length > 0);
   const bad = SB.mcp.some(s => s.state === "error");
   set("#bd-mcp", SB.mcp.length, bad ? "bad" : "");
 }
@@ -240,8 +265,15 @@ function renderMemory() {
     b.dataset.n = n ? String(n) : "";
   });
   if (SB.mk === "library") { renderLibrary(box, q); sbBadges(); return; }
-  const rows = items.filter(e => (SB.mk === "all" || e.kind === SB.mk) && (!q || (e.name + " " + e.body + " " + e.tags.join(" ")).toLowerCase().includes(q)));
   box.innerHTML = "";
+  if (SB.inbox.length && SB.mk === "all" && !q) {
+    const head = el("div", "dgroup", `Suggestions (${SB.inbox.length})`);
+    const clear = el("button", "link", "Dismiss all"); clear.onclick = () => { SB.inbox = []; inboxSave(); renderMemory(); };
+    head.append(clear); box.append(head);
+    SB.inbox.forEach(it => box.append(inboxCard(it)));
+    box.append(el("div", "dgroup", "Saved"));
+  }
+  const rows = items.filter(e => (SB.mk === "all" || e.kind === SB.mk) && (!q || (e.name + " " + e.body + " " + e.tags.join(" ")).toLowerCase().includes(q)));
   if (!items.length) { box.append(el("div", "dempty", "Nothing saved yet. The agent saves what later sessions need; add notes yourself with ＋ or /remember.")); sbBadges(); return; }
   if (!rows.length) box.append(el("div", "dempty", "Nothing matches."));
   for (const e of rows) {
