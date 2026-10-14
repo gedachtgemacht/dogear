@@ -17,7 +17,7 @@ from . import browser as br, llm, tools
 from . import present as pres
 from . import checkpoint as cp
 from . import profiles
-from .audit import AUDIT_JS, format_report
+from .audit import AUDIT_JS, format_report, static_check, static_report
 from . import devtools_code, devtools_run, memory as mem, copycheck, planning, library
 from .devtools_run import READ_ACTIONS as GIT_READ
 from . import ultra as _ultra_mod
@@ -1005,6 +1005,19 @@ class Agent:
             except Exception:
                 pass
         serious = any(f["sev"] in ("high", "medium") for r in results for f in r["findings"])
+        source = ""
+        try:                                                   # the page source: quality floor and generated-UI tells
+            html_text = (root / page).read_text(errors="replace")
+            email = bool(re.search(r"e-?mail", brief or "", re.I))
+            floor_, tells_ = static_check(html_text, email)
+            if re.search(r"\b(style|stil|aquarell|watercolor|papercut|papierschnitt|linocut|linolschnitt|risograph|blueprint|blaupause|bauhaus|"
+                         r"brutalis\w*|pixel|art d[eé]co|memphis|chalk\w*|kreide\w*|zine|collage|isometr\w*|ukiyo|halftone|comic|mid-century|"
+                         r"letterpress|thermal\w*|bleiglas|stained glass|origami|clay\w*)\b", brief or "", re.I):
+                tells_ = []                                    # a named art style overrides the avoid list
+            source = static_report(floor_, tells_)
+        except OSError:
+            pass
+        serious = serious or bool(source)
         copy = []
         if brief and blocks:
             try:
@@ -1013,7 +1026,8 @@ class Agent:
                 copy = []
         if not serious and not copy:
             return ""
-        return f"Page: {page}\n" + format_report(results) + ("\n" + copycheck.format_report(copy) if copy else "")
+        return (f"Page: {page}\n" + format_report(results) + ("\n" + source if source else "")
+                + ("\n" + copycheck.format_report(copy) if copy else ""))
 
     async def make_titles(self, s: dict) -> dict:
         """Short titles for the outline, written by the helper model. Cached in the session."""

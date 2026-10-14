@@ -6,7 +6,6 @@ usage:
 Outputs: data/design-bench/<label>/<id>.jpg screenshots, a contact sheet and results.json; prints a table.
 """
 import asyncio, base64, json, os, re, shutil, sys, tempfile, time
-from html.parser import HTMLParser
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import websockets
@@ -25,45 +24,11 @@ URL, ORIGIN = "ws://127.0.0.1:7870/ws", "http://127.0.0.1:7870"
 TIMEOUT = 600
 
 
-class P(HTMLParser):
-    def __init__(self):
-        super().__init__(); self.imgs_no_alt = self.inputs = self.labels = 0; self.viewport = self.title = False; self.lang = None
-    def handle_starttag(self, tag, attrs):
-        a = dict(attrs)
-        if tag == "img" and "alt" not in a: self.imgs_no_alt += 1
-        if tag in ("input", "select", "textarea") and a.get("type") not in ("hidden", "submit", "button"): self.inputs += 1
-        if tag == "label": self.labels += 1
-        if tag == "meta" and a.get("name") == "viewport": self.viewport = True
-        if tag == "html": self.lang = a.get("lang")
-        if tag == "title": self.title = True
-
-
 def static_problems(html: str, task: dict) -> tuple[list[str], list[str]]:
-    """(floor failures, generated-UI tells) from the dataset's check.py rules."""
-    low, floor, tells = html.lower(), [], []
-    p = P(); p.feed(html)
+    """(floor failures, generated-UI tells): the shared source checks of the quality gate."""
+    from dogear.audit import static_check
     email = "email" in task["prompt"].lower() or "e-mail" in task["prompt"].lower()
-    if not low.lstrip().startswith("<!doctype html"): floor.append("doctype")
-    if not p.viewport: floor.append("viewport")
-    if not p.lang: floor.append("lang")
-    if not p.title: floor.append("title")
-    if p.imgs_no_alt: floor.append("img alt")
-    if p.inputs and not p.labels: floor.append("labels")
-    if not email:
-        if "focus-visible" not in low: floor.append("focus-visible")
-        if "prefers-reduced-motion" not in low and "motion-reduce" not in low: floor.append("reduced-motion")
-        if "@media" not in low and not re.search(r"\b(sm|md|lg):", html): floor.append("responsive")
-    ext = [u for u in re.findall(r'(?:src|href)=["\'](https?://[^"\']+)', html)
-           if not re.search(r"fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.tailwindcss\.com|^https?://(www\.)?(example|github\.com|maps\.google|apps\.apple|play\.google)", u)]
-    if ext: floor.append("external resources")
-    if re.search(r"lorem ipsum", html, re.I): tells.append("lorem ipsum")
-    if re.search(r"#f4f1ea|#d97757|#faf7f2|#fbf7f0", html, re.I): tells.append("cream/terracotta")
-    if re.search(r"Feature [123]\b", html): tells.append("Feature N")
-    if html.count("→") > 3: tells.append("arrows")
-    if len(re.findall(r"text-transform:\s*uppercase|uppercase tracking", low)) > 2: tells.append("caps labels")
-    if any(re.search(r"<(span|em|i|b|strong|mark)\b", h, re.I) for h in re.findall(r"<h1[^>]*>(.*?)</h1>", html, re.I | re.S)):
-        tells.append("styled headline word")
-    return floor, tells
+    return static_check(html, email)
 
 
 async def measure(browser: Browser, page: Path, task: dict, shot: Path) -> dict:

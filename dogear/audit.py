@@ -179,3 +179,110 @@ def format_report(results: list[dict]) -> str:
     if not total:
         lines.append("Audit clean at all sizes. (It checks geometry and contrast, not taste: also look at the screenshots.)")
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ static checks on the page source (quality floor + generated-UI tells)
+import re as _re
+from html.parser import HTMLParser as _HTMLParser
+
+
+class _Scan(_HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.imgs_no_alt = self.inputs = self.labels = 0
+        self.viewport = self.title = False
+        self.lang = None
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "img" and "alt" not in a:
+            self.imgs_no_alt += 1
+        if tag in ("input", "select", "textarea") and a.get("type") not in ("hidden", "submit", "button"):
+            self.inputs += 1
+        if tag == "label":
+            self.labels += 1
+        if tag == "meta" and a.get("name") == "viewport":
+            self.viewport = True
+        if tag == "html":
+            self.lang = a.get("lang")
+        if tag == "title":
+            self.title = True
+
+
+def static_check(html: str, email: bool = False) -> tuple[list[str], list[str]]:
+    """(floor failures, generated-UI tells) from the source. Same rules as the design dataset's check.py, with one
+    refinement: reduced-motion is only required when the page actually animates or transitions."""
+    low, floor, tells = html.lower(), [], []
+    p = _Scan()
+    try:
+        p.feed(html)
+    except Exception:
+        pass
+    if not low.lstrip().startswith("<!doctype html"):
+        floor.append("doctype")
+    if not p.viewport:
+        floor.append("viewport")
+    if not p.lang:
+        floor.append("lang")
+    if not p.title:
+        floor.append("title")
+    if p.imgs_no_alt:
+        floor.append("img alt")
+    if p.inputs and not p.labels:
+        floor.append("labels")
+    if not email:
+        if "focus-visible" not in low:
+            floor.append("focus-visible")
+        moves = _re.search(r"@keyframes|animation\s*:|animation-name|transition\s*:|scroll-behavior|transition-|animate-|duration-", low)
+        if moves and "prefers-reduced-motion" not in low and "motion-reduce" not in low:
+            floor.append("reduced-motion")
+        if "@media" not in low and not _re.search(r"\b(sm|md|lg):", html):
+            floor.append("responsive")
+    ext = [u for u in _re.findall(r'(?:src|href)=["\'](https?://[^"\']+)', html)
+           if not _re.search(r"fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.tailwindcss\.com|^https?://(www\.)?(example|github\.com|maps\.google|apps\.apple|play\.google)", u)]
+    if ext:
+        floor.append("external resources")
+    if _re.search(r"lorem ipsum", html, _re.I):
+        tells.append("lorem ipsum")
+    if _re.search(r"#f4f1ea|#d97757|#faf7f2|#fbf7f0", html, _re.I):
+        tells.append("cream/terracotta")
+    if _re.search(r"Feature [123]\b", html):
+        tells.append("Feature N")
+    if html.count("\u2192") > 3:
+        tells.append("arrows")
+    if len(_re.findall(r"text-transform:\s*uppercase|uppercase tracking", low)) > 2:
+        tells.append("caps labels")
+    if any(_re.search(r"<(span|em|i|b|strong|mark)\b", h, _re.I) for h in _re.findall(r"<h1[^>]*>(.*?)</h1>", html, _re.I | _re.S)):
+        tells.append("styled headline word")
+    return floor, tells
+
+
+STATIC_MSG = {
+    "doctype": "the file does not start with <!doctype html>",
+    "viewport": "no <meta name=\"viewport\">",
+    "lang": "no lang attribute on <html>",
+    "title": "no <title>",
+    "img alt": "image(s) without alt text",
+    "labels": "form controls without any <label>",
+    "focus-visible": "no :focus-visible styling: add a visible focus style (2px outline, offset) for links, buttons and inputs",
+    "reduced-motion": "the page animates or transitions but has no @media (prefers-reduced-motion: reduce) rule: add one that removes or shortens the motion",
+    "responsive": "no responsive rules (@media or breakpoint utilities)",
+    "external resources": "loads external resources other than Google Fonts and the Tailwind CDN: inline them or draw them in CSS/SVG",
+    "lorem ipsum": "placeholder copy (lorem ipsum): write real content",
+    "cream/terracotta": "uses the default generated palette (cream + terracotta): choose colors from the subject",
+    "Feature N": "generic names like 'Feature 1': write specific copy",
+    "arrows": "the arrow character is used more than 3 times (arrows glued onto links are a generated-UI tell): keep it for one place at most",
+    "caps labels": "more than two text-transform: uppercase rules (ALL-CAPS tracked eyebrow labels are a generated-UI tell): keep one or two where they mean something",
+    "styled headline word": "a single word in the <h1> is colored, italic or bold (a generated-UI tell): set the headline in one style",
+}
+
+
+def static_report(floor: list[str], tells: list[str]) -> str:
+    """Report block for the quality gate; empty when nothing is wrong."""
+    items = [(k, "floor") for k in floor] + [(k, "tell") for k in tells]
+    if not items:
+        return ""
+    lines = [f"== Source checks: {len(items)} finding(s)"]
+    for k, kind in items:
+        lines.append(f"  MEDIUM {kind}: {k}: {STATIC_MSG.get(k, k)}")
+    return "\n".join(lines)
