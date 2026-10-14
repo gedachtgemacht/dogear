@@ -187,8 +187,11 @@ def invalidate(model: str | None = None):
 
 async def list_profiles(client: httpx.AsyncClient) -> list[Profile]:
     r = await client.get(f"{URL}/api/tags", timeout=5)
-    out = []
-    for m in r.json().get("models", []):
+    out, seen = [], set()
+    for m in sorted(r.json().get("models", []), key=lambda m: (len(m["name"]), m["name"])):
+        if m.get("digest") in seen:                 # a second tag of the same model (e.g. latest and an mtp alias)
+            continue
+        seen.add(m.get("digest"))
         p = await get_profile(client, m["name"])
         if not p.embedding:
             out.append(p)
