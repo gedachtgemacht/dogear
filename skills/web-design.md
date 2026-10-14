@@ -9,7 +9,7 @@ triggers: html, css, website, web site, webpage, web page, webseite, homepage, l
 Tools and dashboards follow the neutral rules below. A page for a real business, product or person needs a concept BEFORE code; without one the result is the same dark card grid every time. After your plan, write this brief in six short lines, then build exactly to it:
 1. The real thing: name three concrete physical details of that world (materials, tools, places, smells, labels), e.g. for a roastery: jute sack, chalked price board, copper cooling tray. Use them for imagery and wording.
 2. Mood in three words. Not "modern", "clean" or "minimal".
-3. Palette of 4 colors with hex, taken from that world: one dominant background, one ink, one strong accent, one supporting tone. Default is a light, warm or tinted background; dark only if the subject is about night or screens.
+3. Palette of 4 to 6 named colors with hex, taken from that world: one dominant background, one ink, one strong accent, supporting tones. There is no default palette: cream background + terracotta accent + serif display, and near-black + neon green, are the two house styles of generated UI. If your first idea is one of them, throw it away and ask what the subject actually looks like.
 4. Type: one display face with character (system stacks: Georgia, "Iowan Old Style", Palatino for warmth; "Arial Black", Impact-like heavy sans with uppercase and letter-spacing for industrial; ui-monospace for labels and prices) over a plain body face. Make the display size really large (clamp(48px, 8vw, 120px)) on at least one element.
 5. One signature move, repeated: oversized numerals, a stamped label or badge, a ruled ledger or price-board table, a big edge-to-edge color block, one strongly cropped shape.
 6. One layout rule that breaks the default: asymmetric split, left-aligned over a visible grid, full-bleed color bands, content not centered.
@@ -29,6 +29,17 @@ The hero is rarely the problem; the lower half is where pages fall back to the t
 - Use only facts from the request: names, prices, hours, address, products. Do not invent numbers, years, origins, certifications, shipping times or promises. If a section needs a fact you do not have, write copy that does not need it and say so under "Assumptions".
 - Check the language like an editor before you finish: article and ending agreement, singular and plural ("jede zweite Woche", "alle zwei Wochen"), compounds that really exist ("Abo-Bindung", not "Abo-Bindlichkeit"). Read the strings in the file once, slowly.
 - Headlines state something specific and short. No two-slogan pattern ("Kaffee, der schmeckt. Direkt aus Altona.").
+
+## Quality floor (always, without being asked)
+- Semantic HTML (header, nav, main, section, article, footer, button, form, label, table where it is tabular). Every form control has a label, images have alt text, icon-only buttons have aria-label.
+- Responsive down to 360px, no horizontal scroll, grid or flexbox rather than fixed pixel widths.
+- Visible :focus-visible, subtle hover states, legible disabled states; respect prefers-reduced-motion and use motion only where it answers an action.
+- Contrast at least 4.5:1 for body text and 3:1 for large text and UI borders. One spacing scale (4, 8, 12, 16, 24, 32, 48, 64) and a type scale with at most 5 sizes and 2 weights.
+- Real-looking content: specific names, numbers and dates that fit the subject, in the language of the brief. Buttons say what happens ("Save changes", "Vorbestellen"), not "Submit". Empty, error and loading states are design, not afterthoughts.
+- One `<style>` block with CSS custom properties; fonts only via Google Fonts `<link>`; images are CSS or inline SVG drawings. The file is complete: doctype, lang, viewport, title.
+
+## Reference first
+For a site or page brief, call `library_search` with the brief before you write the design brief: it returns design plans of similar solved briefs (palette, type, layout, the one bold point). Use them for direction and to see what "not the default" looks like; do not copy them.
 
 ## Process (always)
 1. Before coding, decide what the page is for and its ONE primary action. Write real content: no lorem ipsum, no "Item 1".
@@ -63,6 +74,15 @@ The hero is rarely the problem; the lower half is where pages fall back to the t
 - Dashboard: KPI row, one main chart or table, filters on top.
 
 ## Avoid (the generic AI look)
+From a set of 300 solved design briefs, these are the tells of generated UI:
+- Cream background plus terracotta accent plus serif display as a default; near-black plus neon green as a default.
+- Identical rounded cards with the same soft shadow for everything. Not everything is a card.
+- ALL-CAPS tracked eyebrow labels above every heading, "01 / 02 / 03" markers on non-sequences, "→" glued onto every link, meta strings joined with middle dots.
+- Gradient blobs and glassmorphism as decoration. Fade-up animations on every section, hover-lift on every card.
+- Coloring or italicizing a single word in a headline.
+- Placeholder copy, generic icons with no meaning, stock-photo descriptions.
+- Structure that does not encode anything: numbers only for real sequences, dividers only between real groups, badges only for real states.
+
 Three identical rounded cards stacked; purple or blue gradients on navy; emoji as logo or icons; everything centered; a giant title over tiny content; glow shadows; placeholder-only fields; huge padding with little content; low-contrast gray text.
 
 ## Responsive and accessible

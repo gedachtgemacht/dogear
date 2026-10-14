@@ -30,6 +30,10 @@ def _db() -> sqlite3.Connection:
         id INTEGER PRIMARY KEY AUTOINCREMENT, problem TEXT NOT NULL, solution TEXT NOT NULL, language TEXT DEFAULT '',
         framework TEXT DEFAULT '', project TEXT DEFAULT '', source TEXT DEFAULT '', created REAL, updated REAL,
         uses INTEGER DEFAULT 1, digest TEXT, embedding TEXT)""")
+    try:
+        c.execute("ALTER TABLE entries ADD COLUMN extra TEXT DEFAULT ''")      # bulk text that is not embedded (e.g. the full HTML of a design plan)
+    except sqlite3.OperationalError:
+        pass
     return c
 
 
@@ -64,7 +68,7 @@ def _text(problem: str, solution: str) -> str:
     return problem.strip() + "\n\n" + solution.strip()[:700]
 
 
-async def add(client, url: str, item: dict) -> dict:
+async def add(client, url: str, item: dict, dedupe: bool = True) -> dict:
     """Store an entry. A near-duplicate (same problem, similar code) is replaced instead of appended."""
     problem, solution = str(item["problem"]).strip(), str(item["solution"]).strip("\n")
     if not problem or not solution:
@@ -78,7 +82,7 @@ async def add(client, url: str, item: dict) -> dict:
     db = _db()
     try:
         hit, best = None, 0.0
-        for r in db.execute(f"SELECT {COLS}, embedding, digest FROM entries WHERE language = ?", (item.get("language", ""),)):
+        for r in (db.execute(f"SELECT {COLS}, embedding, digest FROM entries WHERE language = ?", (item.get("language", ""),)) if dedupe else []):
             if r[-1] == digest:
                 hit, best = r[0], 1.0
                 break
@@ -91,15 +95,15 @@ async def add(client, url: str, item: dict) -> dict:
                 if inter > best:
                     hit, best = r[0], inter + 0.2
         if hit and best >= (REPLACE_AT if emb else 0.95):
-            db.execute("UPDATE entries SET problem=?, solution=?, framework=?, project=?, source=?, updated=?, uses=uses+1, digest=?, embedding=? WHERE id=?",
+            db.execute("UPDATE entries SET problem=?, solution=?, framework=?, project=?, source=?, updated=?, uses=uses+1, digest=?, embedding=?, extra=? WHERE id=?",
                        (problem, solution, item.get("framework", ""), item.get("project", ""), item.get("source", ""), now, digest,
-                        json.dumps(emb) if emb else None, hit))
+                        json.dumps(emb) if emb else None, item.get("extra", ""), hit))
             db.commit()
             return {"id": hit, "replaced": True}
-        cur = db.execute("INSERT INTO entries (problem, solution, language, framework, project, source, created, updated, digest, embedding) "
-                         "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        cur = db.execute("INSERT INTO entries (problem, solution, language, framework, project, source, created, updated, digest, embedding, extra) "
+                         "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                          (problem, solution, item.get("language", ""), item.get("framework", ""), item.get("project", ""),
-                          item.get("source", ""), now, now, digest, json.dumps(emb) if emb else None))
+                          item.get("source", ""), now, now, digest, json.dumps(emb) if emb else None, item.get("extra", "")))
         db.commit()
         return {"id": cur.lastrowid, "replaced": False}
     finally:
@@ -112,7 +116,7 @@ async def search(client, url: str, query: str, k: int = 3, language: str = "") -
         return []
     db = _db()
     try:
-        rows = db.execute(f"SELECT {COLS}, embedding FROM entries" + (" WHERE language = ?" if language else ""),
+        rows = db.execute(f"SELECT {COLS}, extra, embedding FROM entries" + (" WHERE language = ?" if language else ""),
                           (language,) if language else ()).fetchall()
     finally:
         db.close()
@@ -127,7 +131,7 @@ async def search(client, url: str, query: str, k: int = 3, language: str = "") -
             a, b = _words(query), _words(r[1] + " " + r[3] + " " + r[4])
             sc = len(a & b) / max(1, len(a)) * 0.8
         if sc >= MIN_SCORE:
-            out.append({**_row(r[:-1]), "score": round(sc, 3)})
+            out.append({**_row(r[:-2]), "extra": r[-2] or "", "score": round(sc, 3)})
     out.sort(key=lambda e: -e["score"])
     return out[:k]
 
@@ -150,11 +154,17 @@ def delete(entry_id: int) -> bool:
         db.close()
 
 
-def format_hits(hits: list[dict]) -> str:
+def format_hits(hits: list[dict], full: bool = False) -> str:
     out = []
     for h in hits:
         meta = ", ".join(x for x in (h["language"], h["framework"], h["project"], time.strftime("%Y-%m-%d", time.localtime(h["updated"]))) if x)
-        out.append(f"[{h['id']}] {h['problem']}  ({meta})\n```{h['language']}\n{h['solution']}\n```")
+        if h["language"] == "design-plan":                     # a plan is prose; the full page is only shown on request
+            block = f"[{h['id']}] Brief: {h['problem']}  ({meta})\n{h['solution']}"
+            if full and h.get("extra"):
+                block += "\n```html\n" + h["extra"][:14000] + "\n```"
+        else:
+            block = f"[{h['id']}] {h['problem']}  ({meta})\n```{h['language']}\n{h['solution']}\n```"
+        out.append(block)
     return "\n\n".join(out)
 
 
@@ -222,13 +232,15 @@ async def extract(client, url: str, model: str, root: Path, request: str, answer
 
 # ------------------------------------------------------------------ the model's tool
 
-async def library_search(ctx, query="", limit=3):
+async def library_search(ctx, query="", limit=3, full=False):
     if not getattr(ctx, "library", None):
         raise ToolError("The library is not available here")
+    full = full in (True, "true", "True", 1, "1")
     hits = await ctx.library(str(query), max(1, min(int(limit or 3), 6)))
     if not hits:
         return f"No proven solution in the library matches {query!r}."
-    return "Proven solutions from earlier runs the user rated as good (reuse them, adapt to this project):\n\n" + format_hits(hits)
+    return ("Proven solutions and reference designs (reuse code where it fits; use design plans for direction, do not copy them):\n\n"
+            + format_hits(hits, full)[:16000])
 
 
 TOOLS = {
@@ -237,5 +249,6 @@ TOOLS = {
         "Search the library of proven solutions: code from earlier runs that the user rated as good, found by what the task is about. "
         "Use it in the planning phase and before you write something that may already exist.",
         {"query": {"type": "string", "description": "what you need to build, in plain words"},
-         "limit": {"type": "integer", "description": "results, default 3"}}, ["query"])),
+         "limit": {"type": "integer", "description": "results, default 3"},
+         "full": {"type": "boolean", "description": "for design plans: also return the complete HTML of the reference page"}}, ["query"])),
 }

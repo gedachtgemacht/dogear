@@ -571,6 +571,15 @@ class Agent:
         skills, skill_names = load_skills(text, ctx.root)
         if skill_names:
             await self.send({"type": "notice", "text": "Skills: " + ", ".join(skill_names)})
+        if mode != "plan" and "web-design" in skill_names:
+            try:                                          # reference designs for page briefs: direction, not templates
+                refs = [h for h in await library.search(self.client, llm.URL, text, 2, "design-plan")]
+            except Exception:
+                refs = []
+            if refs:
+                skills += ("\nDesign plans of similar solved briefs (for direction: how they avoid the default look; do not copy them; "
+                           "library_search with full=true returns a complete reference page):\n" + library.format_hits(refs)[:4000] + "\n")
+                await self.send({"type": "notice", "text": f"Design references: {len(refs)}"})
         sys_tpl = SYSTEM
         drop = []
         if prof.prompt == "lean" or not prof.planning:
