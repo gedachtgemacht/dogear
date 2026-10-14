@@ -61,7 +61,8 @@ def static_problems(html: str, task: dict) -> tuple[list[str], list[str]]:
     if re.search(r"Feature [123]\b", html): tells.append("Feature N")
     if html.count("→") > 3: tells.append("arrows")
     if len(re.findall(r"text-transform:\s*uppercase|uppercase tracking", low)) > 2: tells.append("caps labels")
-    if re.search(r"<h1[^>]*>[^<]*<(span|em|i)[^>]*>", html, re.I): tells.append("colored headline word")
+    if any(re.search(r"<(span|em|i|b|strong|mark)\b", h, re.I) for h in re.findall(r"<h1[^>]*>(.*?)</h1>", html, re.I | re.S)):
+        tells.append("styled headline word")
     return floor, tells
 
 
