@@ -492,6 +492,15 @@ async def ws(sock: WebSocket):
                 val = 1 if float(m.get("value", 0)) > 0 else -1
                 prev = sm_msg.get("rating") or {}
                 rating = {"value": val, "note": str(m.get("note", ""))[:500], "at": time.time(), "extracted": bool(prev.get("extracted"))}
+                auto = (sm_msg["summary"].get("auto_library") or {}).get("entries", [])      # saved by the harness when the tests went green
+                if auto and val < 0:
+                    n_ = await asyncio.to_thread(library.delete_many, [e["id"] for e in auto], True)
+                    sm_msg["summary"].pop("auto_library", None)
+                    if n_:
+                        await send({"type": "notice", "text": f"Removed {n_} automatically saved library entr{'y' if n_ == 1 else 'ies'} of that run."})
+                elif auto and val > 0 and not rating["extracted"]:
+                    await asyncio.to_thread(library.confirm, [e["id"] for e in auto])
+                    rating["extracted"], rating["saved"] = True, auto
                 sm_msg["rating"] = rating
                 sm_msg["summary"]["rating"] = rating
                 A.save(ag.session)
@@ -529,6 +538,15 @@ async def ws(sock: WebSocket):
                 if str(root) in (ag.session["root"], cfg["root"]):
                     touched = await asyncio.to_thread(cpt.restore, root, str(m["to"]))
                     await send({"type": "undone", "files": touched})
+                    gone = 0                                   # what the harness learned from the undone run was wrong by definition
+                    for x in ag.session["messages"]:
+                        sm_ = x.get("summary") or {}
+                        if (sm_.get("checkpoint") or {}).get("before") == str(m["to"]) and sm_.get("auto_library"):
+                            gone += await asyncio.to_thread(library.delete_many, [e["id"] for e in sm_["auto_library"].get("entries", [])], True)
+                            sm_.pop("auto_library", None)
+                    if gone:
+                        A.save(ag.session)
+                        await send({"type": "notice", "text": f"Removed {gone} automatically saved library entr{'y' if gone == 1 else 'ies'} of the undone run."})
                     await send({"type": "fs"})
             elif t == "variants" and not busy():
                 try:
@@ -552,6 +570,30 @@ async def ws(sock: WebSocket):
                     res = await asyncio.to_thread(W.adopt, Path(wt["origin"]), Path(wt["path"]), wt["base"])
                     await send({"type": "adopted", "id": s2["id"], **res})
                     await send({"type": "fs"})
+                    # taking a variant over is a weak "good": learn from its last turn (once, only if it was not rated or learned from yet)
+                    try:
+                        sm2 = next((x for x in reversed(s2["messages"]) if x.get("summary")), None)
+                        if sm2 and not sm2["summary"].get("auto_library") and not (sm2.get("rating") or {}).get("extracted") and sm2["summary"].get("changes"):
+                            wp, req = Path(wt["path"]).resolve(), next((x["content"] for x in reversed(s2["messages"]) if x["role"] == "user"
+                                                                          and isinstance(x.get("content"), str) and not x.get("review")), "")
+                            rels = []
+                            for c in sm2["summary"]["changes"]:
+                                try:
+                                    rels.append(str(Path(c["path"]).resolve().relative_to(wp)) if os.path.isabs(c["path"]) else c["path"])
+                                except ValueError:
+                                    pass
+
+                            async def learn_adopted(s2=s2, sm2=sm2, rels=rels, req=req, origin=wt["origin"]):
+                                try:
+                                    helper = await profiles.pick_helper(client) or A.HELPER_MODEL
+                                    saved = await library.learn(client, llm.URL, helper, Path(origin), req, sm2.get("content", ""), rels, auto=True)
+                                    sm2["summary"]["auto_library"] = {"entries": saved}
+                                    A.save(s2)
+                                except Exception:
+                                    pass
+                            asyncio.create_task(learn_adopted())
+                    except Exception:
+                        pass
             elif t == "discard":
                 s2 = A.load(m.get("id", ""))
                 wt = (s2 or {}).get("worktree")
@@ -561,6 +603,9 @@ async def ws(sock: WebSocket):
                         r.task.cancel()
                     await asyncio.to_thread(W.remove, Path(wt["path"]))
                     wt["removed"] = True
+                    ids_ = [e["id"] for x in s2["messages"] for e in ((x.get("summary") or {}).get("auto_library") or {}).get("entries", [])]
+                    if ids_:                                   # a discarded variant must not teach
+                        await asyncio.to_thread(library.delete_many, ids_, True)
                     A.save(s2)
                     RUNS.pop(s2["id"], None)
                     await broadcast({"type": "runs", "runs": [r.info() for r in RUNS.values()]})

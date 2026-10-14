@@ -602,7 +602,7 @@ class Agent:
                 before = await asyncio.to_thread(cp.checkpoint, ctx.root, f"dogear: before: {text.strip()[:90]}")
             self._cp = {"before": before, "root": str(ctx.root)}
         user_idx = sum(1 for m in s["messages"] if m["role"] == "user" and not m.get("review") and not m.get("compact")) - 1
-        info = {"sources": [], "changes": {}, "commands": [], "tools": set()}
+        info = {"sources": [], "changes": {}, "commands": [], "tools": set(), "tests": []}
         orig_text, cancelled = text, False
         if _review and getattr(self, "_carry", None):
             c = self._carry
@@ -788,6 +788,10 @@ class Agent:
                             ch["created"] = ch["created"] or bool(meta.get("created"))
                     if name == "Bash":
                         info["commands"].append({"cmd": args.get("command", "")[:140], "exit": meta.get("exit", 0 if ok else 1)})
+                    if name == "RunTests" and isinstance(meta.get("tests"), dict):
+                        t_ = meta["tests"]
+                        info.setdefault("tests", []).append(bool(ok and not meta.get("exit") and not t_.get("failed") and not t_.get("errors")
+                                                                 and (t_.get("passed") or 0) >= 1))
                     new_text = meta.pop("new_text", None)
                     s["messages"].append({"role": "tool", "tool_name": name, "content": result, "meta": meta, "ok": ok})
                     await self.send({"type": "result", "id": cid, "ok": ok, "text": result[:6000], "meta": meta})
@@ -884,6 +888,10 @@ class Agent:
                 if not s["messages"][final_idx].get("plan"):
                     asyncio.create_task(self._present(s, final_idx, user_idx, orig_text, s["messages"][final_idx]["content"], hints))
                 asyncio.create_task(self._name(s))
+                if (info.get("tests") and info["tests"][-1] and info["changes"] and not cancelled and mode != "plan"
+                        and not s["messages"][final_idx].get("plan")):
+                    asyncio.create_task(self._auto_learn(s, final_idx, user_idx, ctx.root, orig_text, s["messages"][final_idx].get("content", ""),
+                                                         list(info["changes"])))
                 if nsteps >= 5 and mode != "plan" and not cancelled and prof.tier != "small" and (info["changes"] or info["commands"]):
                     asyncio.create_task(self._suggest(ctx.root, user_idx, orig_text, s["messages"][final_idx]["content"],
                                                       list(info["changes"]), list(info["commands"])))
@@ -940,6 +948,26 @@ class Agent:
             s["named"] = n
             save(s)
             await self.send({"type": "renamed", "id": s["id"], "title": s["title"], "note": s["note"]})
+        except Exception:
+            pass
+
+    async def _auto_learn(self, s: dict, final_idx: int, user_idx: int, root: Path, request: str, answer: str, changed: list[str]):
+        """A run that ends with passing tests teaches the library without waiting for a rating. The entries carry the auto mark,
+        and are removed again when the user undoes the run or rates it as not good."""
+        try:
+            helper = await profiles.pick_helper(self.client) or HELPER_MODEL
+            rels = []
+            for p in changed:
+                try:
+                    rels.append(str(Path(p).resolve().relative_to(root)) if os.path.isabs(p) else p)
+                except ValueError:
+                    pass
+            saved = await library.learn(self.client, llm.URL, helper, root, request, answer, rels, auto=True)
+            msg = s["messages"][final_idx]
+            msg.setdefault("summary", {})["auto_library"] = {"entries": saved}
+            save(s)
+            if saved:
+                await self.send({"type": "library_saved", "turn": user_idx, "entries": saved, "auto": True})
         except Exception:
             pass
 

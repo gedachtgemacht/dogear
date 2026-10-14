@@ -30,19 +30,21 @@ def _db() -> sqlite3.Connection:
         id INTEGER PRIMARY KEY AUTOINCREMENT, problem TEXT NOT NULL, solution TEXT NOT NULL, language TEXT DEFAULT '',
         framework TEXT DEFAULT '', project TEXT DEFAULT '', source TEXT DEFAULT '', created REAL, updated REAL,
         uses INTEGER DEFAULT 1, digest TEXT, embedding TEXT)""")
-    try:
-        c.execute("ALTER TABLE entries ADD COLUMN extra TEXT DEFAULT ''")      # bulk text that is not embedded (e.g. the full HTML of a design plan)
-    except sqlite3.OperationalError:
-        pass
+    for col in ("extra TEXT DEFAULT ''",                                      # bulk text that is not embedded (e.g. the full HTML of a design plan)
+                "auto INTEGER DEFAULT 0"):                                    # 1 = saved by the harness from a weak signal, not rated by the user
+        try:
+            c.execute("ALTER TABLE entries ADD COLUMN " + col)
+        except sqlite3.OperationalError:
+            pass
     return c
 
 
 def _row(r) -> dict:
     return {"id": r[0], "problem": r[1], "solution": r[2], "language": r[3], "framework": r[4], "project": r[5],
-            "source": r[6], "created": r[7], "updated": r[8], "uses": r[9]}
+            "source": r[6], "created": r[7], "updated": r[8], "uses": r[9], "auto": bool(r[10])}
 
 
-COLS = "id, problem, solution, language, framework, project, source, created, updated, uses"
+COLS = "id, problem, solution, language, framework, project, source, created, updated, uses, auto"
 
 
 async def embed(client, url: str, texts: list[str]) -> list[list[float]] | None:
@@ -95,15 +97,16 @@ async def add(client, url: str, item: dict, dedupe: bool = True) -> dict:
                 if inter > best:
                     hit, best = r[0], inter + 0.2
         if hit and best >= (REPLACE_AT if emb else 0.95):
-            db.execute("UPDATE entries SET problem=?, solution=?, framework=?, project=?, source=?, updated=?, uses=uses+1, digest=?, embedding=?, extra=? WHERE id=?",
+            db.execute("UPDATE entries SET problem=?, solution=?, framework=?, project=?, source=?, updated=?, uses=uses+1, digest=?, embedding=?, extra=?, auto=MIN(auto, ?) WHERE id=?",
                        (problem, solution, item.get("framework", ""), item.get("project", ""), item.get("source", ""), now, digest,
-                        json.dumps(emb) if emb else None, item.get("extra", ""), hit))
+                        json.dumps(emb) if emb else None, item.get("extra", ""), int(bool(item.get("auto"))), hit))
             db.commit()
             return {"id": hit, "replaced": True}
-        cur = db.execute("INSERT INTO entries (problem, solution, language, framework, project, source, created, updated, digest, embedding, extra) "
-                         "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        cur = db.execute("INSERT INTO entries (problem, solution, language, framework, project, source, created, updated, digest, embedding, extra, auto) "
+                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                          (problem, solution, item.get("language", ""), item.get("framework", ""), item.get("project", ""),
-                          item.get("source", ""), now, now, digest, json.dumps(emb) if emb else None, item.get("extra", "")))
+                          item.get("source", ""), now, now, digest, json.dumps(emb) if emb else None, item.get("extra", ""),
+                          int(bool(item.get("auto")))))
         db.commit()
         return {"id": cur.lastrowid, "replaced": False}
     finally:
@@ -152,6 +155,44 @@ def delete(entry_id: int) -> bool:
         return n > 0
     finally:
         db.close()
+
+
+def delete_many(ids: list[int], only_auto: bool = False) -> int:
+    """Remove entries; with only_auto an entry the user has since confirmed by rating is kept."""
+    ids = [int(i) for i in ids]
+    if not ids:
+        return 0
+    db = _db()
+    try:
+        q = ",".join("?" * len(ids))
+        n = db.execute(f"DELETE FROM entries WHERE id IN ({q})" + (" AND auto = 1" if only_auto else ""), ids).rowcount
+        db.commit()
+        return n
+    finally:
+        db.close()
+
+
+def confirm(ids: list[int]) -> None:
+    """The user rated the run as good: entries saved automatically become ordinary ones."""
+    ids = [int(i) for i in ids]
+    if ids:
+        db = _db()
+        try:
+            db.execute(f"UPDATE entries SET auto = 0 WHERE id IN ({','.join('?' * len(ids))})", ids)
+            db.commit()
+        finally:
+            db.close()
+
+
+async def learn(client, url: str, model: str, root: Path, request: str, answer: str, changed: list[str], auto: bool = False) -> list[dict]:
+    """Extract snippets from a finished run and store them. Returns what was saved."""
+    saved = []
+    for it in await extract(client, url, model, root, request, answer, changed):
+        if auto and re.search(r"(^|/)(test_[^/]*|[^/]*_test\.\w+|[^/]*\.test\.\w+|tests?/[^/]*)$", it["source"].split(":")[0]):
+            continue                                         # tests are not worth keeping without a rating
+        r = await add(client, url, {**it, "auto": auto})
+        saved.append({"id": r["id"], "problem": it["problem"], "language": it["language"], "replaced": r["replaced"]})
+    return saved
 
 
 def format_hits(hits: list[dict], full: bool = False) -> str:

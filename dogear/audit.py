@@ -100,6 +100,24 @@ AUDIT_JS = r"""
     && !e.getAttribute("title") && !e.querySelector("svg, img, canvas") && !e.getAttribute("aria-labelledby"));
   if (nameless.length) add("high", "empty-control", `${nameless.length} button/link(s) have no label, text or icon (empty placeholder items?)`, nameless[0]);
 
+  // 6c. placeholder imagery: stand-in image services, a tile pattern used as the picture
+  const BIG = e => { const r = R(e); return r.width >= 180 && r.height >= 110; };
+  const phUrl = /placehold|placeholder|dummyimage|lorem(pixel|picsum)|picsum\.photos|placekitten|fakeimg|unsplash\.it/i;
+  const phImgs = els.filter(e => e.tagName === "IMG" && phUrl.test(e.currentSrc || e.src || ""));
+  if (phImgs.length) add("high", "placeholder-image", `${phImgs.length} image(s) come from a placeholder service; use a real asset or draw the illustration`, phImgs[0]);
+  const tiled = s => /conic-gradient|repeating-/.test(s) || (s.match(/linear-gradient\(/g) || []).length >= 2;
+  const seenTile = new Set();
+  for (const e of els) {
+    if (isSkip(e) || !BIG(e) || (e.textContent || "").trim().length > 20) continue;
+    for (const ps of [null, "::before", "::after"]) {
+      const c = getComputedStyle(e, ps || undefined);
+      if (ps && c.content === "none") continue;
+      if (c.backgroundImage === "none" || !tiled(c.backgroundImage) || !/\d/.test(c.backgroundSize || "") || e.querySelectorAll("img, canvas, video").length) continue;
+      const host = ps ? e : e, key = host.className + ps;
+      if (!seenTile.has(key)) { seenTile.add(key); add("medium", "placeholder-image", `a repeating tile pattern fills a ${Math.round(R(e).width)}x${Math.round(R(e).height)} area with almost nothing on it; it reads as an image-transparency grid, not as an illustration. Replace it with the actual subject`, host); }
+    }
+  }
+
   // 7. duplicate controls inside one group
   const labels = new Map();
   for (const b of inter.filter(e => e.matches("button, [role=button]"))) {

@@ -718,6 +718,19 @@ function autoSavedLine(t, items) {
   box.append(undo); t.after.append(box);
 }
 
+/* code the harness added to the library by itself after a run that ended with passing tests: one quiet line with Undo */
+function libraryAutoLine(t, entries) {
+  t.after.querySelectorAll(".autosaved.lib").forEach(n => n.remove());
+  const box = el("div", "autosaved lib");
+  box.append(el("span", "", "Saved to the library (tests passed): " + entries.map(e => e.problem.slice(0, 50) + (e.replaced ? " (updated)" : "")).join(" · ")));
+  const undo = el("button", "link", "Undo");
+  undo.onclick = async () => {
+    await Promise.all(entries.map(e => fetch(`/api/library/${e.id}`, { method: "DELETE" })));
+    box.innerHTML = ""; box.append(el("span", "", "Removed again.")); sbBadges(); if (SB.tab === "memory") loadMemory();
+  };
+  box.append(undo); t.after.append(box);
+}
+
 /* ============================================================ events */
 function handle(m) {
   if (m.type === "frame" || m.type.startsWith("b_")) return browserEvent(m);
@@ -769,7 +782,8 @@ function handle(m) {
       log.append(el("div", "empty", m.prefill ? "Branched before this message. Edit it and send." : "Branched. This is a copy; the original stays unchanged.")); log.scrollTop = log.scrollHeight; refresh(); break;
     case "mcp": renderMcp(m.servers); break;
     case "rated": { const t = S.turns[m.turn]; if (t?.ratePaint) t.ratePaint(m.rating, null); break; }
-    case "library_saved": { const t = S.turns[m.turn]; if (t?.ratePaint && t.rateEl) t.ratePaint({ value: 1 }, m); sbBadges(); if (SB.tab === "memory") loadMemory(); break; }
+    case "library_saved": { const t = S.turns[m.turn];
+      if (m.auto) { if (t && m.entries.length) libraryAutoLine(t, m.entries); sbBadges(); if (SB.tab === "memory") loadMemory(); break; } if (t?.ratePaint && t.rateEl) t.ratePaint({ value: 1 }, m); sbBadges(); if (SB.tab === "memory") loadMemory(); break; }
     case "plan_proposed": { const t = S.turns[m.user_idx] || S.turn; if (t) planCard(t, m.plan); S.draft = true; renderRail(S.todos); if (!S.planOpen) planShow(true); break; }
     case "plan_status": { const c = S.planCard; if (c) c.update(m); S.draft = false; renderRail(S.todos); break; }
     case "auto_saved": { const t = S.turns[m.user_idx] || S.turn; if (t) autoSavedLine(t, m.items); loadMemory(); break; }

@@ -10,6 +10,7 @@ EXPECT = {  # fixture: (kinds that must be found, size)
     "overflow.html": ({"overflow"}, 390), "contrast.html": ({"contrast", "text-size"}, 1280), "grid_hole.html": ({"grid-hole"}, 1280),
     "empty_box.html": ({"empty-area"}, 1280), "duplicate.html": ({"duplicate"}, 1280), "tiny.html": ({"target-size", "icon-size"}, 390),
     "overlap.html": ({"overlap"}, 1280), "emptybtn.html": ({"empty-control"}, 1280), "basics.html": ({"viewport", "alt", "label"}, 1280), "card_soup.html": ({"card-soup"}, 1280),
+    "placeholder.html": ({"placeholder-image"}, 1280),
 }
 
 async def audit(b, url, w, h):

@@ -217,7 +217,7 @@ async function loadMemory() {
 function renderLibrary(box, q) {
   const rows = SB.lib.filter(e => !q || (e.problem + " " + e.solution + " " + e.language + " " + e.framework + " " + e.project).toLowerCase().includes(q));
   box.innerHTML = "";
-  if (!SB.lib.length) { box.append(el("div", "dempty", "The library is empty. Rate a finished run as good: reusable code from it is saved here and offered in later plans.")); return; }
+  if (!SB.lib.length) { box.append(el("div", "dempty", "The library is empty. Rate a finished run as good, or let tests pass: reusable code from it is saved here and offered in later plans.")); return; }
   if (!rows.length) box.append(el("div", "dempty", "Nothing matches."));
   for (const e of rows) {
     const row = el("div", "mem-i"), head = el("div", "mem-h");
@@ -227,6 +227,7 @@ function renderLibrary(box, q) {
     head.append(x);
     const meta = el("div", "lib-meta"); [e.language, e.framework, e.project, new Date(e.updated * 1000).toLocaleDateString()].filter(Boolean).forEach(v => meta.append(el("span", "chip", v)));
     if (e.uses > 1) meta.append(el("span", "chip", `used ${e.uses}x`));
+    if (e.auto) { const c = el("span", "chip", "auto"); c.title = "Saved after a run with passing tests, not rated by you"; meta.append(c); }
     const body = el("pre", "mem-b", e.solution); body.hidden = true;
     head.onclick = () => body.hidden = !body.hidden;
     row.append(head, meta, body); box.append(row);

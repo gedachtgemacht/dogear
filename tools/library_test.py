@@ -52,6 +52,15 @@ async def unit():
         except ValueError:
             check("secrets are refused", True)
         check("delete", L.delete(a["id"]) and len(L.entries()) == 2)
+        au = await L.add(c, URL, {"problem": "Parse a semver string into major, minor and patch numbers.", "solution": "def semver(v):\n    a, b, c = v.split('.')\n    return int(a), int(b), int(c)\n",
+                                  "language": "python", "auto": True})
+        check("auto entry carries the mark", next(e for e in L.entries() if e["id"] == au["id"])["auto"] is True)
+        check("rated entries are not auto", not next(e for e in L.entries() if e["id"] == s["id"])["auto"])
+        check("only_auto keeps rated entries", L.delete_many([s["id"]], only_auto=True) == 0 and any(e["id"] == s["id"] for e in L.entries()))
+        L.confirm([au["id"]])
+        check("confirm clears the mark", not next(e for e in L.entries() if e["id"] == au["id"])["auto"])
+        au2 = await L.add(c, URL, {"problem": "Left-pad a number with zeros to a fixed width.", "solution": "def pad(n, w=3):\n    return str(n).zfill(w)\n", "language": "python", "auto": True})
+        check("only_auto removes auto entries", L.delete_many([au2["id"]], only_auto=True) == 1)
 
 async def live():
     import websockets
