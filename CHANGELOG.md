@@ -19,6 +19,7 @@
 - Open approvals and questions reach windows that join later. Switching the mode applies at once, also to the running turn; "Don't ask" grants whatever is waiting, and every window drops the question.
 - Checkpoints survive an embedded repository without a commit (a left-over worktree); when a checkpoint is impossible, the run says why instead of silently offering no Undo.
 - Answers render Markdown tables, numbered lists and rules; the prompt asks for plain words instead of emoji markers.
+- Code: `Agent.turn()` split into named pieces with `RunConfig` and `TurnStats`; the WebSocket handler is a table of small functions on a `Conn` object; library learning moved to `learning.py`; silent exceptions now log; one shared `rel_paths`.
 - README, architecture notes, MIT license.
 
 ## Before 0.2.0

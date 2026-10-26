@@ -4,6 +4,8 @@ One Python process, one browser tab, one local model. This page follows a reques
 
 ## A turn, start to finish
 
+`Agent.turn()` is short; the work is in named pieces: `_build_system` (the prompt), `_toolbox` (which tools the model sees), `_call_model` (one streamed call with retries), `_nudge` (when the model stops without a tool call), `_run_tool` (permissions and execution), `_guard` (stagnation and repetition), `_record` (statistics, the tool message, the UI events) and `_finish` (gate, self-check, summary, receipt). A `RunConfig` carries what the UI chose; a `TurnStats` carries what the run collected, including into the self-check pass.
+
 1. **The UI sends `{"type": "user", "text": …}`** over the WebSocket, together with the current settings (model, mode, project root, context size, review on/off, attached images).
 2. **`server.py` starts `Agent.turn()`** as a task. Only one turn runs per connection; other windows that are open see it live (mirror).
 3. **`agent.py` builds the prompt.** The system prompt (`SYSTEM`) plus: project instructions (`DOGEAR.md` …), the skills whose triggers match the request, notes and snippets from memory, the current task list, library hits in plan mode, and a one-level listing of the project. The model profile (`profiles.py`) decides which tools and which prompt variant the model gets.
@@ -40,6 +42,8 @@ Every tool has a class: `read`, `write`, `shell`, `net` or `browser`. The mode d
 Client → server (selection): `user`, `approve`, `answer` (multiple-choice form), `stop`, `new`, `open`, `fork`, `variants`, `adopt`, `discard`, `undo`, `set_todos`, `pin`, `titles`, `rate`, `compact`, `plan_approve`, `plan_reject`, `root`, `mcp_reload`, `kill` (background shell), and the browser messages `b_sub`, `b_open`, `b_nav`, `b_mouse`, `b_key`, `b_text`, `b_scrollto`, `b_viewport`, `b_back`, `b_fwd`, `b_reload`, `b_resume`.
 
 Server → client (selection): `session`, `turn_start`, `thinking`, `token`, `tool`, `sub`, `result`, `changed`, `fs`, `term_start`, `term`, `term_end`, `approval`, `ask`, `todos`, `plan_proposed`, `plan_status`, `ultra`, `notice`, `error`, `usage`, `summary`, `present`, `done`, `forked`, `runs`, `run_status`, `run_event`, `adopted`, `undone`, `rated`, `library_saved`, `auto_saved`, `titles`, `pins`, `renamed`, `compacted`, `mcp`, `profile`, and the browser events `frame`, `b_nav`, `b_status`, `b_act`, `b_marks`, `b_log`, `b_scroll`, `b_need`.
+
+On the server every message type has one small handler in `HANDLERS` (server.py), each taking the connection (`Conn`: its agent, settings, running task, senders) and the message. The browser messages go to `browser_msg`. What a run teaches the library, and when that is taken back, lives in `learning.py`.
 
 Each connection has its own outbound queue and writer task; a slow window drops screencast frames first and never stalls the agent.
 

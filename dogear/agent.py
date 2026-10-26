@@ -223,8 +223,8 @@ def listing() -> list[dict]:
                         "parent": par.get("id"), "parent_turn": par.get("turn"), "where": par.get("where"), "note": s.get("note", ""),
                         "worktree": bool(s.get("worktree")), "turns": len(user_positions(s["messages"])),
                         "lineage": lineage_of(s)})
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("ignored: %s", e)
     return sorted(out, key=lambda x: -x["updated"])
 
 
@@ -1171,8 +1171,8 @@ class Agent:
             s["named"] = n
             save(s)
             await self.send({"type": "renamed", "id": s["id"], "title": s["title"], "note": s["note"]})
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("ignored: %s", e)
 
     async def _auto_learn(self, s: dict, final_idx: int, user_idx: int, root: Path, request: str, answer: str, changed: list[str]):
         """A run that ends with passing tests teaches the library without waiting for a rating. The entries carry the auto mark,
@@ -1191,8 +1191,8 @@ class Agent:
             save(s)
             if saved:
                 await self.send({"type": "library_saved", "turn": user_idx, "entries": saved, "auto": True})
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("ignored: %s", e)
 
     async def _suggest(self, root: Path, user_idx: int, request: str, answer: str, changed: list[str], commands: list[str]):
         """After a longer run: propose what is worth remembering. The user decides; nothing is saved automatically."""
@@ -1216,20 +1216,15 @@ class Agent:
                     continue
             if saved:
                 await self.send({"type": "auto_saved", "user_idx": user_idx, "items": saved})
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("ignored: %s", e)
 
     async def _audit_changed(self, root: Path, changed: list[str], model: str = "", brief: str = "") -> str:
         """Quality gate: measure the page the run produced. Returns the report if it has HIGH/MEDIUM findings, else ''."""
         b = self.browser
         if b is None:
             return ""
-        rels = []
-        for p in changed:
-            try:
-                rels.append(str(Path(p).resolve().relative_to(root)) if os.path.isabs(p) else p)
-            except ValueError:
-                pass
+        rels = tools.rel_paths(root, changed)
         html = [p for p in rels if p.lower().endswith((".html", ".htm"))]
         page = html[-1] if html else ("index.html" if (root / "index.html").exists() and rels else None)
         if not page:
@@ -1253,8 +1248,8 @@ class Agent:
         finally:
             try:
                 await b.set_viewport(*old)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("ignored: %s", e)
         serious = any(f["sev"] in ("high", "medium") for r in results for f in r["findings"])
         self._audit_counts = {"page": page, "high": sum(1 for r in results for f in r["findings"] if f["sev"] == "high"),
                               "medium": sum(1 for r in results for f in r["findings"] if f["sev"] == "medium"), "source": 0, "copy": 0}
@@ -1331,11 +1326,8 @@ class Agent:
                 return f"Unknown MCP tool {name}.", False
         elif name not in tools.TOOLS:
             return f"Unknown tool {name}. Available: {', '.join(tools.TOOLS)}", False
-        if mode == "plan" and not (name == "Git" and args.get("action") in GIT_READ) and (
-                tools.TOOLS.get(name, ("",))[0] in ("write", "shell") or name.startswith("mcp__")
-                or name in ("browser_click", "browser_type", "browser_key", "browser_eval")):
-            return ("Plan mode is read-only: nothing was changed. Finish your investigation and present the plan as your answer; "
-                    "the user will switch the mode to let you implement it."), False
+        if mode == "plan" and name.startswith("mcp__"):      # built-in write tools are not even offered in the plan phase
+            return "MCP tools are not available in the planning phase. Investigate with the read tools, then call kanban_create_tasks.", False
         if not mcp_server:
             args, err = fix_args(name, args)
             if err:

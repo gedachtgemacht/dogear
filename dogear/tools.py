@@ -25,6 +25,17 @@ class ToolError(Exception):
     pass
 
 
+def rel_paths(root: Path, paths: list[str]) -> list[str]:
+    """Project-relative versions of `paths`; absolute paths outside the project are dropped."""
+    out = []
+    for p in paths:
+        try:
+            out.append(str(Path(p).resolve().relative_to(root.resolve())) if os.path.isabs(p) else p)
+        except ValueError:
+            pass
+    return out
+
+
 def clean_env() -> dict:
     """Environment for the agent's shell: the user's project, not this app's own virtualenv."""
     env = dict(os.environ)

@@ -110,6 +110,7 @@ dogear/          the Python package
   present.py     turns a finished answer into display blocks
   ultra.py       a multi-agent orchestrator (kept, not offered to the model)
   mcp.py         MCP client, stdio and Streamable HTTP
+  learning.py    what a run teaches the library, and when that is taken back
   llm.py         streaming client for Ollama
 web/             the UI: index.html, style.css and six plain scripts (core, sidebar, chat, workspace, board, app)
 skills/          built-in skills (skills/extra: more, not loaded by default)
@@ -135,7 +136,8 @@ projects/        default workspace for new sessions; not in git
 ```sh
 uv run pytest                              # the check scripts that run on this machine (browser, model and dataset checks skip when missing)
 uv run python tests/check_skills.py        # any check on its own
-uv run python tests/live/smoke.py          # end-to-end scripts: need the server on 7870 and the models
+uv run python tests/live/ws_smoke.py       # the WebSocket handlers without a model: needs the server on 7870
+uv run python tests/live/smoke.py          # end-to-end scripts: need the server and the models
 uv run python scripts/bench.py             # benchmark all installed models on small coding tasks
 ```
 

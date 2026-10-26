@@ -4,6 +4,7 @@ import json
 import os
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from . import checkpoint as cpt
 from . import worktrees as W
 from . import llm, profiles, tools
 from . import memory as mem
-from . import library
+from . import library, learning
 from .brand import NAME
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -35,7 +36,7 @@ AGENTS: set = set()      # one Agent per open UI connection, plus the background
 
 class Run:
     """A branch run that works in its own worktree, independent of any browser window."""
-    def __init__(self, sid: str, title: str, agent):
+    def __init__(self, sid: str, title: str, agent=None):
         self.sid, self.title, self.agent = sid, title, agent
         self.status, self.last, self.steps, self.task = "running", "starting", 0, None
 
@@ -270,6 +271,460 @@ async def del_session(sid: str):
     return {"ok": True}
 
 
+# ------------------------------------------------------------------ the WebSocket: one connection, one agent, small handlers
+
+class Conn:
+    """One UI connection: its agent, its settings, the turn it is running, and how to reach its window and the others."""
+
+    def __init__(self, sock: WebSocket):
+        self.sock = sock
+        self.outq: asyncio.Queue = asyncio.Queue()
+        self.cfg = settings()
+        self.task: asyncio.Task | None = None
+        self.ag = A.Agent(self.send, client, BROWSER)
+        self.ag.mirror = self.mirror
+
+    async def writer(self):
+        try:
+            while True:
+                await self.sock.send_json(await self.outq.get())
+        except Exception:
+            pass
+
+    async def direct(self, m: dict):
+        """To this window only. A lagging window drops screencast frames first and never stalls the agent."""
+        if m.get("type") == "frame" and self.outq.qsize() > 60:
+            return
+        self.outq.put_nowait(m)
+
+    async def mirror(self, m: dict):
+        """To every other window, so a run started here is visible everywhere."""
+        for cid, d in list(MIRROR.items()):
+            if cid != id(self):
+                await d(m)
+
+    async def send(self, m: dict):
+        await self.direct(m)
+        await self.mirror(m)
+
+    async def broadcast(self, m: dict):
+        for d in list(MIRROR.values()):
+            await d(m)
+
+    def busy(self) -> bool:
+        return bool(self.task and not self.task.done())
+
+    def start(self, coro) -> None:
+        self.task = asyncio.create_task(coro)
+        self.ag.turn_task = self.task
+
+    def start_turn(self, text: str, mode: str | None = None, images: list | None = None) -> None:
+        cfg = self.cfg
+        self.ag.session["root"] = preview_root["path"] = cfg["root"]
+        self.start(self.ag.turn(text, cfg["model"], bool(cfg["think"]), mode or cfg["mode"], cfg["num_ctx"],
+                                review_on=bool(cfg.get("review", True)), images=list(images or [])))
+
+    def last_plan_message(self) -> dict | None:
+        return next((m for m in reversed(self.ag.session["messages"]) if m.get("plan")), None)
+
+
+HANDLERS: dict[str, Callable[[Conn, dict], Awaitable[None]]] = {}
+
+
+def handler(name: str):
+    def deco(fn):
+        HANDLERS[name] = fn
+        return fn
+    return deco
+
+
+@handler("user")
+async def on_user(c: Conn, m: dict):
+    if c.busy():
+        return
+    c.cfg.update({k: m[k] for k in ("model", "think", "mode", "root", "review") if k in m})
+    c.cfg["num_ctx"] = int(m.get("num_ctx", c.cfg["num_ctx"]))
+    if m.get("persist"):                                 # the UI persists its settings; scripts do not clobber them
+        SETTINGS.write_text(json.dumps(c.cfg))
+    if not Path(c.cfg["root"]).is_dir():
+        await c.send({"type": "error", "text": f"Project directory does not exist: {c.cfg['root']}"})
+        await c.send({"type": "done"})
+        return
+    c.start_turn(m["text"], None, [i for i in m.get("images", []) if isinstance(i, str)][:4])
+
+
+@handler("plan_approve")
+async def on_plan_approve(c: Conn, m: dict):
+    """Phase 2 -> 3: the edited board is approved; the harness carries it out one task per turn."""
+    if c.busy():
+        return
+    pm = c.last_plan_message()
+    if not pm or pm["plan"].get("status") not in ("proposed", "replan"):
+        await c.send({"type": "notice", "text": "There is no plan waiting for approval."})
+        return
+    edited = []
+    for it in (m.get("tasks") or [])[:20]:
+        content = " ".join(str(it.get("content", "") if isinstance(it, dict) else it).split())[:300]
+        if len(content) >= 2:
+            edited.append({"content": content, "detail": " ".join(str(it.get("detail", "") if isinstance(it, dict) else "").split())[:600]})
+    if not edited:
+        await c.send({"type": "notice", "text": "The plan has no tasks left."})
+        return
+    pm["plan"].update(status="approved", tasks=edited, log=[])
+    c.ag.session["todos"] = [{"content": t["content"], "status": "pending"} for t in edited]
+    A.save(c.ag.session)
+    await c.send({"type": "plan_status", "status": "approved", "tasks": edited})
+    await c.send({"type": "todos", "items": c.ag.session["todos"]})
+    mode = m.get("mode") if m.get("mode") in ("ask", "edit", "auto") else "edit"
+    c.cfg["mode"] = mode
+    c.ag.session["root"] = preview_root["path"] = c.cfg["root"]
+    c.start(c.ag.run_plan(pm, edited, c.cfg["model"], bool(c.cfg["think"]), mode, c.cfg["num_ctx"], bool(c.cfg.get("review", True))))
+
+
+@handler("plan_reject")
+async def on_plan_reject(c: Conn, m: dict):
+    if c.busy():
+        return
+    pm = c.last_plan_message()
+    if not pm or pm["plan"].get("status") not in ("proposed", "replan"):
+        await c.send({"type": "notice", "text": "There is no plan waiting for approval."})
+        return
+    fb = str(m.get("feedback", "")).strip()[:2000] or "The user did not like the plan. Rethink it."
+    pm["plan"].update(status="rejected", feedback=fb)
+    A.save(c.ag.session)
+    await c.send({"type": "plan_status", "status": "rejected", "feedback": fb})
+    c.start_turn("The plan was rejected. Feedback from the user:\n" + fb + "\n\nRevise the plan and submit it again with kanban_create_tasks.", "plan")
+
+
+@handler("approve")
+async def on_approve(c: Conn, m: dict):
+    for a in AGENTS:                                      # the approval may belong to a turn started in another window
+        if m["id"] in a.pending:
+            a.answer(m["id"], bool(m["ok"]), bool(m.get("always")), m.get("key", ""))
+
+
+@handler("answer")
+async def on_answer(c: Conn, m: dict):
+    for a in AGENTS:
+        if m["id"] in a.asks:
+            a.answer_ask(m["id"], m.get("value", ""))
+
+
+@handler("mode")
+async def on_mode(c: Conn, m: dict):
+    """A mode change applies at once, also to the turn that is running; "auto" grants what is waiting."""
+    if m.get("mode") in ("ask", "edit", "auto"):
+        c.cfg["mode"] = m["mode"]
+        c.ag.set_mode(m["mode"])
+
+
+@handler("stop")
+async def on_stop(c: Conn, m: dict):
+    """Stops this window's turn, a turn another window or script started on the same session, or a background run."""
+    sid, stopped = m.get("id"), 0
+    if c.busy() and (not sid or sid == c.ag.session["id"]):
+        c.task.cancel()
+        stopped += 1
+    for a in list(AGENTS):
+        tt = getattr(a, "turn_task", None)
+        if a is not c.ag and a.running and tt and not tt.done() and (not sid or a.session["id"] == sid):
+            tt.cancel()
+            stopped += 1
+    if sid in RUNS and RUNS[sid].task and not RUNS[sid].task.done():
+        RUNS[sid].task.cancel()
+        stopped += 1
+    if not stopped:
+        await c.send({"type": "done"})                    # nothing was running: release the window
+
+
+@handler("rate")
+async def on_rate(c: Conn, m: dict):
+    """The rating under a finished run is the gate for the library: only good runs may teach."""
+    res = learning.rate(c.ag.session, int(m.get("turn", -1)), int(float(m.get("value", 0))), str(m.get("note", "")))
+    if not res:
+        await c.send({"type": "notice", "text": "That turn has no finished run to rate."})
+        return
+    rating, sm_msg, removed = res
+    if removed:
+        await c.send({"type": "notice", "text": f"Removed {removed} automatically saved library entr{'y' if removed == 1 else 'ies'} of that run."})
+    turn = int(m.get("turn", -1))
+    await c.send({"type": "rated", "turn": turn, "rating": rating})
+    if rating["value"] > 0 and not rating["extracted"]:
+        async def learn():
+            try:
+                saved = await learning.learn_from_rating(client, c.ag.session, turn, sm_msg, c.cfg["model"])
+                await c.send({"type": "library_saved", "turn": turn, "entries": saved})
+            except Exception as e:
+                await c.send({"type": "library_saved", "turn": turn, "entries": [], "error": str(e)[:120]})
+        asyncio.create_task(learn())
+
+
+@handler("undo")
+async def on_undo(c: Conn, m: dict):
+    if c.busy():
+        return
+    root = Path(m.get("root", ""))
+    if str(root) not in (c.ag.session["root"], c.cfg["root"]):
+        return
+    touched = await asyncio.to_thread(cpt.restore, root, str(m["to"]))
+    await c.send({"type": "undone", "files": touched})
+    gone = learning.forget_undone(c.ag.session, str(m["to"]))
+    if gone:
+        await c.send({"type": "notice", "text": f"Removed {gone} automatically saved library entr{'y' if gone == 1 else 'ies'} of the undone run."})
+    await c.send({"type": "fs"})
+
+
+@handler("variants")
+async def on_variants(c: Conn, m: dict):
+    if c.busy():
+        return
+    try:
+        await start_variants(c, c.ag.session, int(m.get("turn", 0)), "before" if m.get("where") == "before" else "after",
+                             [str(x) for x in m.get("prompts", [])])
+        await c.broadcast({"type": "runs", "runs": [r.info() for r in RUNS.values()]})
+    except Exception as e:
+        await c.send({"type": "notice", "text": f"Cannot start variants: {e}"})
+
+
+@handler("runs")
+async def on_runs(c: Conn, m: dict):
+    await c.send({"type": "runs", "runs": [r.info() for r in RUNS.values()]})
+
+
+@handler("stop_run")
+async def on_stop_run(c: Conn, m: dict):
+    r = RUNS.get(m.get("id", ""))
+    if r and r.task and not r.task.done():
+        r.task.cancel()
+
+
+@handler("adopt")
+async def on_adopt(c: Conn, m: dict):
+    """Copy the files a variant changed into the original project; files changed in both places are left alone."""
+    s2 = A.load(m.get("id", ""))
+    wt = (s2 or {}).get("worktree")
+    if not wt or wt.get("removed"):
+        await c.send({"type": "notice", "text": "That session has no copy of the project to take files from."})
+        return
+    res = await asyncio.to_thread(W.adopt, Path(wt["origin"]), Path(wt["path"]), wt["base"])
+    await c.send({"type": "adopted", "id": s2["id"], **res})
+    await c.send({"type": "fs"})
+    learning.learn_adopted_later(client, s2, wt)
+
+
+@handler("discard")
+async def on_discard(c: Conn, m: dict):
+    s2 = A.load(m.get("id", ""))
+    wt = (s2 or {}).get("worktree")
+    if not wt or wt.get("removed"):
+        return
+    r = RUNS.get(s2["id"])
+    if r and r.task and not r.task.done():
+        r.task.cancel()
+    await asyncio.to_thread(W.remove, Path(wt["path"]))
+    wt["removed"] = True
+    await asyncio.to_thread(learning.forget_session, s2)
+    A.save(s2)
+    RUNS.pop(s2["id"], None)
+    await c.broadcast({"type": "runs", "runs": [r.info() for r in RUNS.values()]})
+    await c.send({"type": "notice", "text": "The copy of the project was removed. The conversation of that session is kept."})
+
+
+@handler("fork")
+async def on_fork(c: Conn, m: dict):
+    """A new session based on this one: keep the turns up to `turn` (after) or up to the one before it (before, edit and retry)."""
+    if c.busy():
+        return
+    try:
+        new, restore = A.fork_session(c.ag.session, int(m.get("turn", 0)), "before" if m.get("where") == "before" else "after")
+        A.save(new)
+        c.ag.session = new
+        prefill = ""
+        if m.get("where") == "before":
+            parent = A.load(new["parent"]["id"])
+            prefill = parent["messages"][A.user_positions(parent["messages"])[new["parent"]["turn"]]]["content"]
+        await c.send({"type": "forked", "session": new, "restore": restore, "prefill": prefill})
+    except Exception as e:
+        await c.send({"type": "notice", "text": f"Cannot branch: {e}"})
+
+
+@handler("pin")
+async def on_pin(c: Conn, m: dict):
+    pins = set(c.ag.session.get("pins", []))
+    (pins.add if m.get("on") else pins.discard)(int(m["turn"]))
+    c.ag.session["pins"] = sorted(pins)
+    A.save(c.ag.session)
+    await c.send({"type": "pins", "pins": c.ag.session["pins"]})
+
+
+@handler("titles")
+async def on_titles(c: Conn, m: dict):
+    async def go():
+        titles = await c.ag.make_titles(c.ag.session)
+        await c.send({"type": "titles", "titles": titles, "session": c.ag.session["id"]})
+    asyncio.create_task(go())
+
+
+@handler("set_todos")
+async def on_set_todos(c: Conn, m: dict):
+    items = [{"content": str(i.get("content", ""))[:300], "status": i.get("status") if i.get("status") in ("pending", "in_progress", "completed") else "pending"}
+             for i in m.get("items", []) if str(i.get("content", "")).strip()][:40]
+    c.ag.session["todos"] = items
+    A.save(c.ag.session)
+    await c.send({"type": "todos", "items": items})
+
+
+@handler("compact")
+async def on_compact(c: Conn, m: dict):
+    if c.busy():
+        return
+    try:
+        r = await c.ag.compact(c.cfg["model"], c.cfg["num_ctx"], str(m.get("focus", "")))
+        await c.send({"type": "compacted", "session": c.ag.session, "auto": False, **r})
+    except Exception as e:
+        await c.send({"type": "notice", "text": f"Compact failed: {e}"})
+
+
+@handler("kill")
+async def on_kill(c: Conn, m: dict):
+    c.ag.procs.kill(m["id"])
+
+
+@handler("root")
+async def on_root(c: Conn, m: dict):
+    if c.busy():
+        return
+    c.cfg["root"] = preview_root["path"] = m["root"]
+    asyncio.create_task(c.ag.sync_mcp(m["root"]))
+
+
+@handler("mcp_reload")
+async def on_mcp_reload(c: Conn, m: dict):
+    if not c.busy():
+        asyncio.create_task(c.ag.sync_mcp(c.cfg["root"]))
+
+
+@handler("open")
+async def on_open(c: Conn, m: dict):
+    if c.busy():
+        return
+    run = RUNS.get(m["id"])
+    if run and run.status in ("running", "waiting"):
+        await c.send({"type": "session", "session": run.agent.session, "live": True})
+        return
+    s = A.load(m["id"])
+    if s:
+        c.ag.session = s
+        c.cfg["root"] = preview_root["path"] = s["root"]
+        await c.send({"type": "session", "session": s})
+        asyncio.create_task(c.ag.sync_mcp(s["root"]))
+
+
+@handler("new")
+async def on_new(c: Conn, m: dict):
+    if c.busy():
+        return
+    c.ag.session = A.new_session(c.cfg["root"])
+    await c.send({"type": "session", "session": c.ag.session})
+
+
+# --- the live browser: the UI's own clicks, keys and navigation go to the shared Chrome
+FAST_BROWSER = {"b_mouse", "b_key", "b_text", "b_resume", "b_scrollto"}      # keep ordered; the rest may take seconds
+
+
+async def browser_msg(c: Conn, m: dict):
+    t = m["type"]
+    try:
+        if t == "b_sub":
+            BROWSER.subs.add(c.send)
+            if BROWSER.alive:
+                for msg in await BROWSER.snapshot():
+                    await c.send(msg)
+        elif t == "b_open":
+            BROWSER.subs.add(c.send)
+            await BROWSER.ensure()
+            for msg in await BROWSER.snapshot():
+                await c.send(msg)
+        elif t == "b_resume":
+            if BROWSER.handoff and not BROWSER.handoff.done():
+                BROWSER.handoff.set_result(True)
+        elif t == "b_nav":
+            BROWSER.subs.add(c.send)
+            await BROWSER.navigate(m["url"])      # starts the browser if needed
+        elif not BROWSER.alive:
+            return
+        elif t == "b_back":
+            await BROWSER.history(-1)
+        elif t == "b_fwd":
+            await BROWSER.history(1)
+        elif t == "b_reload":
+            await BROWSER.reload()
+        elif t == "b_reload_preview" and BROWSER.url.startswith(PREVIEW_URL):
+            await BROWSER.reload()
+        elif t == "b_viewport":
+            await BROWSER.set_viewport(m["w"], m["h"])
+        elif t == "b_mouse":
+            await BROWSER.user_mouse(m)
+        elif t == "b_key":
+            await BROWSER.user_key(m)
+        elif t == "b_text":
+            await BROWSER.insert(m["text"])
+        elif t == "b_scrollto":
+            await BROWSER.scroll_to(m.get("x"), m.get("y"), m.get("dx", 0), m.get("dy", 0))
+    except Exception as e:
+        await c.send({"type": "b_status", "state": "error", "error": str(e)})
+
+
+# --- parallel variants: sessions of their own, each in its own worktree, driven in the background
+async def start_variants(c: Conn, base: dict, turn: int, where: str, prompts: list[str]) -> list[dict]:
+    out = []
+    for i, prompt in enumerate([p for p in prompts if p.strip()][:4]):
+        new, restore = A.fork_session(base, turn, where)
+        origin = Path(base["root"])
+        proj, basesha = await asyncio.to_thread(W.create, origin, new["id"], restore["sha"] if restore else None)
+        new["root"] = str(proj)
+        new["worktree"] = {"path": str(proj), "base": basesha, "origin": str(origin)}
+        new["title"] = f"Variant {chr(65 + i)} · {prompt.strip().splitlines()[0]}"[:60]
+        A.save(new)
+        run = Run(new["id"], new["title"], None)
+
+        async def sink(ev, run=run):
+            t = ev.get("type")
+            if t == "tool":
+                run.steps += 1
+                run.last = f"{ev['name']} {ev.get('label', '')}"[:80]
+            elif t == "approval":
+                run.status, run.last = "waiting", f"waiting for approval: {ev['name']}"
+            elif t == "result" and run.status == "waiting":
+                run.status = "running"
+            elif t == "notice":
+                run.last = ev["text"][:80]
+            await c.broadcast({"type": "run_event", "run": run.sid, "event": ev, "info": run.info()})
+
+        run.agent = A.Agent(sink, client, BROWSER)
+        run.agent.session = new
+        run.last = prompt.strip().replace("\n", " ")[:80]
+        RUNS[new["id"]] = run
+        AGENTS.add(run.agent)
+        cfg = c.cfg
+
+        async def drive(run=run, prompt=prompt):
+            try:
+                await run.agent.turn(prompt, cfg["model"], bool(cfg["think"]), cfg["mode"], cfg["num_ctx"], review_on=bool(cfg.get("review", True)))
+                run.status = "done"
+            except asyncio.CancelledError:
+                run.status = "stopped"
+            except Exception as e:
+                run.status, run.last = "error", str(e)[:80]
+            finally:
+                AGENTS.discard(run.agent)
+                await c.broadcast({"type": "run_status", "info": run.info()})
+
+        run.task = asyncio.create_task(drive())
+        out.append(run.info())
+    return out
+
+
 @app.websocket("/ws")
 async def ws(sock: WebSocket):
     # Only the UI served by this very host may drive the agent (blocks other web pages and DNS rebinding).
@@ -278,425 +733,40 @@ async def ws(sock: WebSocket):
         await sock.close(code=1008)
         return
     await sock.accept()
-
-    # Every connection has its own outbound queue and writer task, so a slow or throttled window
-    # can never stall the agent (or another window). Frames are dropped first when a client lags.
-    outq: asyncio.Queue = asyncio.Queue()
-
-    async def writer():
-        try:
-            while True:
-                await sock.send_json(await outq.get())
-        except Exception:
-            pass
-
-    async def direct(m):
-        if m.get("type") == "frame" and outq.qsize() > 60:
-            return
-        outq.put_nowait(m)
-
-    async def mirror(m):
-        for d in list(MIRROR.values()):
-            if d is not direct:
-                await d(m)
-
-    async def send(m):
-        await direct(m)
-        await mirror(m)
-
-    async def browser_msg(m, send):
-        t = m["type"]
-        try:
-            if t == "b_sub":
-                BROWSER.subs.add(send)
-                if BROWSER.alive:
-                    for msg in await BROWSER.snapshot():
-                        await send(msg)
-            elif t == "b_open":
-                BROWSER.subs.add(send)
-                await BROWSER.ensure()
-                for msg in await BROWSER.snapshot():
-                    await send(msg)
-            elif t == "b_resume":
-                if BROWSER.handoff and not BROWSER.handoff.done():
-                    BROWSER.handoff.set_result(True)
-            elif t == "b_nav":
-                BROWSER.subs.add(send)
-                await BROWSER.navigate(m["url"])      # starts the browser if needed
-            elif not BROWSER.alive:
-                return
-            elif t == "b_back":
-                await BROWSER.history(-1)
-            elif t == "b_fwd":
-                await BROWSER.history(1)
-            elif t == "b_reload":
-                await BROWSER.reload()
-            elif t == "b_reload_preview" and BROWSER.url.startswith(PREVIEW_URL):
-                await BROWSER.reload()
-            elif t == "b_viewport":
-                await BROWSER.set_viewport(m["w"], m["h"])
-            elif t == "b_mouse":
-                await BROWSER.user_mouse(m)
-            elif t == "b_key":
-                await BROWSER.user_key(m)
-            elif t == "b_text":
-                await BROWSER.insert(m["text"])
-            elif t == "b_scrollto":
-                await BROWSER.scroll_to(m.get("x"), m.get("y"), m.get("dx", 0), m.get("dy", 0))
-        except Exception as e:
-            await send({"type": "b_status", "state": "error", "error": str(e)})
-
-    wtask = asyncio.create_task(writer())
-    async def broadcast(msg):
-        for d in list(MIRROR.values()):
-            await d(msg)
-
-    async def start_variants(base: dict, turn: int, where: str, prompts: list[str]):
-        out = []
-        for i, prompt in enumerate([p for p in prompts if p.strip()][:4]):
-            new, restore = A.fork_session(base, turn, where)
-            origin = Path(base["root"])
-            proj, basesha = await asyncio.to_thread(W.create, origin, new["id"], restore["sha"] if restore else None)
-            new["root"] = str(proj)
-            new["worktree"] = {"path": str(proj), "base": basesha, "origin": str(origin)}
-            new["title"] = f"Variant {chr(65 + i)} · {prompt.strip().splitlines()[0]}"[:60]
-            A.save(new)
-            holder = {}
-
-            async def sink(ev, holder=holder):
-                run = holder["run"]
-                t = ev.get("type")
-                if t == "tool":
-                    run.steps += 1
-                    run.last = f"{ev['name']} {ev.get('label', '')}"[:80]
-                elif t == "approval":
-                    run.status, run.last = "waiting", f"waiting for approval: {ev['name']}"
-                elif t == "result" and run.status == "waiting":
-                    run.status = "running"
-                elif t == "notice":
-                    run.last = ev["text"][:80]
-                await broadcast({"type": "run_event", "run": run.sid, "event": ev, "info": run.info()})
-
-            agent = A.Agent(sink, client, BROWSER)
-            agent.session = new
-            run = Run(new["id"], new["title"], agent)
-            run.last = prompt.strip().replace("\n", " ")[:80]
-            holder["run"] = run
-            RUNS[new["id"]] = run
-            AGENTS.add(agent)
-
-            async def drive(run=run, prompt=prompt):
-                try:
-                    await run.agent.turn(prompt, cfg["model"], bool(cfg["think"]), cfg["mode"], cfg["num_ctx"], bool(cfg.get("review", True)), False, None)
-                    run.status = "done"
-                except asyncio.CancelledError:
-                    run.status = "stopped"
-                except Exception as e:
-                    run.status, run.last = "error", str(e)[:80]
-                finally:
-                    AGENTS.discard(run.agent)
-                    await broadcast({"type": "run_status", "info": run.info()})
-
-            run.task = asyncio.create_task(drive())
-            out.append(run.info())
-        return out
-
-    async def _titles(agent, send_):
-        s = agent.session
-        titles = await agent.make_titles(s)
-        await send_({"type": "titles", "titles": titles, "session": s["id"]})
-
-    ag = A.Agent(send, client, BROWSER)
-    ag.mirror = mirror
-    MIRROR[id(direct)] = direct
-    AGENTS.add(ag)
+    c = Conn(sock)
+    wtask = asyncio.create_task(c.writer())
+    MIRROR[id(c)] = c.direct
+    AGENTS.add(c.ag)
     for other in AGENTS:                      # joining while a turn runs: show it from the start, including what it waits for
-        if other is not ag and other.running:
-            await direct({"type": "turn_start", "session": other.session})
+        if other is not c.ag and other.running:
+            await c.direct({"type": "turn_start", "session": other.session})
             for ev in list(other.pending_info.values()):
-                await direct(ev)
-    cfg = settings()
-    ag.session = A.new_session(cfg["root"])
-    task: asyncio.Task | None = None
-    busy = lambda: bool(task and not task.done())
-
-    def start_turn(text, mode=None, images=()):
-        nonlocal task
-        ag.session["root"] = preview_root["path"] = cfg["root"]
-        task = asyncio.create_task(ag.turn(text, cfg["model"], bool(cfg["think"]), mode or cfg["mode"], cfg["num_ctx"],
-                                           bool(cfg.get("review", True)), False, list(images)))
-        ag.turn_task = task
-
-    def last_plan_message():
-        return next((m for m in reversed(ag.session["messages"]) if m.get("plan")), None)
-    asyncio.create_task(ag.sync_mcp(cfg["root"]))
+                await c.direct(ev)
+    c.ag.session = A.new_session(c.cfg["root"])
+    asyncio.create_task(c.ag.sync_mcp(c.cfg["root"]))
     try:
         while True:
             m = await sock.receive_json()
             t = m.get("type")
-            if t == "user" and not busy():
-                cfg.update({k: m[k] for k in ("model", "think", "mode", "root", "review") if k in m})
-                cfg["num_ctx"] = int(m.get("num_ctx", cfg["num_ctx"]))
-                if "mozilla" in sock.headers.get("user-agent", "").lower():
-                    SETTINGS.write_text(json.dumps(cfg))
-                if not Path(cfg["root"]).is_dir():
-                    await send({"type": "error", "text": f"Project directory does not exist: {cfg['root']}"})
-                    await send({"type": "done"})
-                    continue
-                ag.session["root"] = preview_root["path"] = cfg["root"]
-                task = asyncio.create_task(
-                    ag.turn(m["text"], cfg["model"], bool(cfg["think"]), cfg["mode"], cfg["num_ctx"],
-                            bool(cfg.get("review", True)), False, [i for i in m.get("images", []) if isinstance(i, str)][:4]))
-                ag.turn_task = task
-            elif t in ("plan_approve", "plan_reject") and not busy():
-                pm = last_plan_message()
-                if not pm or pm["plan"].get("status") not in ("proposed", "replan"):
-                    await send({"type": "notice", "text": "There is no plan waiting for approval."})
-                    continue
-                if t == "plan_approve":
-                    edited = []
-                    for it in (m.get("tasks") or [])[:20]:
-                        c = " ".join(str(it.get("content", "") if isinstance(it, dict) else it).split())[:300]
-                        if len(c) >= 2:
-                            edited.append({"content": c, "detail": " ".join(str(it.get("detail", "") if isinstance(it, dict) else "").split())[:600]})
-                    if not edited:
-                        await send({"type": "notice", "text": "The plan has no tasks left."})
-                        continue
-                    pm["plan"].update(status="approved", tasks=edited, log=[])
-                    ag.session["todos"] = [{"content": t_["content"], "status": "pending"} for t_ in edited]
-                    A.save(ag.session)
-                    await send({"type": "plan_status", "status": "approved", "tasks": edited})
-                    await send({"type": "todos", "items": ag.session["todos"]})
-                    mode = m.get("mode") if m.get("mode") in ("ask", "edit", "auto") else "edit"
-                    cfg["mode"] = mode
-                    # phase 3: the harness hands the model one task per turn (Agent.run_plan)
-                    ag.session["root"] = preview_root["path"] = cfg["root"]
-                    task = asyncio.create_task(ag.run_plan(pm, edited, cfg["model"], bool(cfg["think"]), mode, cfg["num_ctx"], bool(cfg.get("review", True))))
-                    ag.turn_task = task
+            if not isinstance(t, str):
+                continue
+            if t.startswith("b_"):
+                if t in FAST_BROWSER:
+                    await browser_msg(c, m)
                 else:
-                    fb = str(m.get("feedback", "")).strip()[:2000] or "The user did not like the plan. Rethink it."
-                    pm["plan"].update(status="rejected", feedback=fb)
-                    A.save(ag.session)
-                    await send({"type": "plan_status", "status": "rejected", "feedback": fb})
-                    start_turn("The plan was rejected. Feedback from the user:\n" + fb +
-                               "\n\nRevise the plan and submit it again with kanban_create_tasks.", "plan")
-            elif t == "rate":
-                # rating the finished run is the gate for the library: only good runs may teach
-                pos = A.user_positions(ag.session["messages"])
-                i = int(m.get("turn", -1))
-                if not (0 <= i < len(pos)):
-                    continue
-                end = pos[i + 1] if i + 1 < len(pos) else len(ag.session["messages"])
-                msgs = ag.session["messages"]
-                sm_msg = next((x for x in reversed(msgs[pos[i]:end]) if x.get("summary")), None)
-                if not sm_msg:
-                    await send({"type": "notice", "text": "That turn has no finished run to rate."})
-                    continue
-                val = 1 if float(m.get("value", 0)) > 0 else -1
-                prev = sm_msg.get("rating") or {}
-                rating = {"value": val, "note": str(m.get("note", ""))[:500], "at": time.time(), "extracted": bool(prev.get("extracted"))}
-                auto = (sm_msg["summary"].get("auto_library") or {}).get("entries", [])      # saved by the harness when the tests went green
-                if auto and val < 0:
-                    n_ = await asyncio.to_thread(library.delete_many, [e["id"] for e in auto], True)
-                    sm_msg["summary"].pop("auto_library", None)
-                    if n_:
-                        await send({"type": "notice", "text": f"Removed {n_} automatically saved library entr{'y' if n_ == 1 else 'ies'} of that run."})
-                elif auto and val > 0 and not rating["extracted"]:
-                    await asyncio.to_thread(library.confirm, [e["id"] for e in auto])
-                    rating["extracted"], rating["saved"] = True, auto
-                sm_msg["rating"] = rating
-                sm_msg["summary"]["rating"] = rating
-                A.save(ag.session)
-                await send({"type": "rated", "turn": i, "rating": rating})
-                if val > 0 and not rating["extracted"]:
-                    rating["extracted"] = True
-                    A.save(ag.session)
-                    request = msgs[pos[i]]["content"]
-                    changed = [c["path"] for c in sm_msg["summary"].get("changes", [])]
-                    root_, model_ = ag.session["root"], cfg["model"]
-
-                    async def learn(i=i, request=request, answer=sm_msg.get("content", ""), changed=changed, root_=root_, model_=model_, rating=rating, sess=ag.session):
-                        try:
-                            items = await library.extract(client, llm.URL, model_, Path(root_), request, answer, changed)
-                            saved = []
-                            for it in items:
-                                r = await library.add(client, llm.URL, it)
-                                saved.append({"id": r["id"], "problem": it["problem"], "language": it["language"], "replaced": r["replaced"]})
-                            rating["saved"] = saved
-                            A.save(sess)
-                            await send({"type": "library_saved", "turn": i, "entries": saved})
-                        except Exception as e:
-                            await send({"type": "library_saved", "turn": i, "entries": [], "error": str(e)[:120]})
-                    asyncio.create_task(learn())
-            elif t == "approve":
-                for a in AGENTS:              # the approval may belong to a turn started in another window
-                    if m["id"] in a.pending:
-                        a.answer(m["id"], bool(m["ok"]), bool(m.get("always")), m.get("key", ""))
-            elif t == "answer":
-                for a in AGENTS:
-                    if m["id"] in a.asks:
-                        a.answer_ask(m["id"], m.get("value", ""))
-            elif t == "undo" and not busy():
-                root = Path(m.get("root", ""))
-                if str(root) in (ag.session["root"], cfg["root"]):
-                    touched = await asyncio.to_thread(cpt.restore, root, str(m["to"]))
-                    await send({"type": "undone", "files": touched})
-                    gone = 0                                   # what the harness learned from the undone run was wrong by definition
-                    for x in ag.session["messages"]:
-                        sm_ = x.get("summary") or {}
-                        if (sm_.get("checkpoint") or {}).get("before") == str(m["to"]) and sm_.get("auto_library"):
-                            gone += await asyncio.to_thread(library.delete_many, [e["id"] for e in sm_["auto_library"].get("entries", [])], True)
-                            sm_.pop("auto_library", None)
-                    if gone:
-                        A.save(ag.session)
-                        await send({"type": "notice", "text": f"Removed {gone} automatically saved library entr{'y' if gone == 1 else 'ies'} of the undone run."})
-                    await send({"type": "fs"})
-            elif t == "variants" and not busy():
-                try:
-                    runs = await start_variants(ag.session, int(m.get("turn", 0)), "before" if m.get("where") == "before" else "after",
-                                                [str(x) for x in m.get("prompts", [])])
-                    await broadcast({"type": "runs", "runs": [r.info() for r in RUNS.values()]})
-                except Exception as e:
-                    await send({"type": "notice", "text": f"Cannot start variants: {e}"})
-            elif t == "runs":
-                await send({"type": "runs", "runs": [r.info() for r in RUNS.values()]})
-            elif t == "stop_run":
-                r = RUNS.get(m.get("id", ""))
-                if r and r.task and not r.task.done():
-                    r.task.cancel()
-            elif t == "adopt":
-                s2 = A.load(m.get("id", ""))
-                wt = (s2 or {}).get("worktree")
-                if not wt or wt.get("removed"):
-                    await send({"type": "notice", "text": "That branch has no worktree to adopt."})
-                else:
-                    res = await asyncio.to_thread(W.adopt, Path(wt["origin"]), Path(wt["path"]), wt["base"])
-                    await send({"type": "adopted", "id": s2["id"], **res})
-                    await send({"type": "fs"})
-                    # taking a variant over is a weak "good": learn from its last turn (once, only if it was not rated or learned from yet)
-                    try:
-                        sm2 = next((x for x in reversed(s2["messages"]) if x.get("summary")), None)
-                        if sm2 and not sm2["summary"].get("auto_library") and not (sm2.get("rating") or {}).get("extracted") and sm2["summary"].get("changes"):
-                            wp, req = Path(wt["path"]).resolve(), next((x["content"] for x in reversed(s2["messages"]) if x["role"] == "user"
-                                                                          and isinstance(x.get("content"), str) and not x.get("review")), "")
-                            rels = []
-                            for c in sm2["summary"]["changes"]:
-                                try:
-                                    rels.append(str(Path(c["path"]).resolve().relative_to(wp)) if os.path.isabs(c["path"]) else c["path"])
-                                except ValueError:
-                                    pass
-
-                            async def learn_adopted(s2=s2, sm2=sm2, rels=rels, req=req, origin=wt["origin"]):
-                                try:
-                                    helper = await profiles.pick_helper(client) or A.HELPER_MODEL
-                                    saved = await library.learn(client, llm.URL, helper, Path(origin), req, sm2.get("content", ""), rels, auto=True)
-                                    sm2["summary"]["auto_library"] = {"entries": saved}
-                                    A.save(s2)
-                                except Exception:
-                                    pass
-                            asyncio.create_task(learn_adopted())
-                    except Exception:
-                        pass
-            elif t == "discard":
-                s2 = A.load(m.get("id", ""))
-                wt = (s2 or {}).get("worktree")
-                if wt and not wt.get("removed"):
-                    r = RUNS.get(s2["id"])
-                    if r and r.task and not r.task.done():
-                        r.task.cancel()
-                    await asyncio.to_thread(W.remove, Path(wt["path"]))
-                    wt["removed"] = True
-                    ids_ = [e["id"] for x in s2["messages"] for e in ((x.get("summary") or {}).get("auto_library") or {}).get("entries", [])]
-                    if ids_:                                   # a discarded variant must not teach
-                        await asyncio.to_thread(library.delete_many, ids_, True)
-                    A.save(s2)
-                    RUNS.pop(s2["id"], None)
-                    await broadcast({"type": "runs", "runs": [r.info() for r in RUNS.values()]})
-                    await send({"type": "notice", "text": "Worktree removed. The conversation of that branch is kept."})
-            elif t == "fork" and not busy():
-                try:
-                    new, restore = A.fork_session(ag.session, int(m.get("turn", 0)), "before" if m.get("where") == "before" else "after")
-                    A.save(new)
-                    ag.session = new
-                    prefill = ""
-                    if m.get("where") == "before":
-                        pos = A.user_positions(A.load(new["parent"]["id"])["messages"])
-                        prefill = A.load(new["parent"]["id"])["messages"][pos[new["parent"]["turn"]]]["content"]
-                    await send({"type": "forked", "session": new, "restore": restore, "prefill": prefill})
-                except Exception as e:
-                    await send({"type": "notice", "text": f"Cannot branch: {e}"})
-            elif t == "pin":
-                pins = set(ag.session.get("pins", []))
-                (pins.add if m.get("on") else pins.discard)(int(m["turn"]))
-                ag.session["pins"] = sorted(pins)
-                A.save(ag.session)
-                await send({"type": "pins", "pins": ag.session["pins"]})
-            elif t == "titles":
-                asyncio.create_task(_titles(ag, send))
-            elif t == "set_todos":
-                items = [{"content": str(i.get("content", ""))[:300], "status": i.get("status") if i.get("status") in ("pending", "in_progress", "completed") else "pending"}
-                         for i in m.get("items", []) if str(i.get("content", "")).strip()][:40]
-                ag.session["todos"] = items
-                A.save(ag.session)
-                await send({"type": "todos", "items": items})
-            elif t == "compact" and not busy():
-                try:
-                    r = await ag.compact(cfg["model"], cfg["num_ctx"], str(m.get("focus", "")))
-                    await send({"type": "compacted", "session": ag.session, "auto": False, **r})
-                except Exception as e:
-                    await send({"type": "notice", "text": f"Compact failed: {e}"})
-            elif t == "stop":
-                # a window can stop its own turn and also a turn that another window or a script started (view-only mirror)
-                sid, stopped = m.get("id"), 0
-                if busy() and (not sid or sid == ag.session["id"]):
-                    task.cancel(); stopped += 1
-                for a in list(AGENTS):
-                    tt = getattr(a, "turn_task", None)
-                    if a is not ag and a.running and tt and not tt.done() and (not sid or a.session["id"] == sid):
-                        tt.cancel(); stopped += 1
-                if sid in RUNS and RUNS[sid].task and not RUNS[sid].task.done():
-                    RUNS[sid].task.cancel(); stopped += 1
-                if not stopped:
-                    await send({"type": "done"})        # nothing was running: release the window
-            elif t.startswith("b_"):
-                if t in ("b_mouse", "b_key", "b_text", "b_resume", "b_scrollto"):   # fast, keep ordered
-                    await browser_msg(m, send)
-                else:                                      # may take seconds (launch, navigation)
-                    asyncio.create_task(browser_msg(m, send))
-            elif t == "kill":
-                ag.procs.kill(m["id"])
-            elif t == "mode":
-                # a mode change applies at once, also to the turn that is running; "auto" grants what is waiting
-                if m.get("mode") in ("ask", "edit", "auto"):
-                    cfg["mode"] = m["mode"]
-                    ag.set_mode(m["mode"])
-            elif t == "root" and not busy():
-                cfg["root"] = preview_root["path"] = m["root"]
-                asyncio.create_task(ag.sync_mcp(m["root"]))
-            elif t == "mcp_reload" and not busy():
-                asyncio.create_task(ag.sync_mcp(cfg["root"]))
-            elif t == "open" and not busy() and RUNS.get(m["id"]) and RUNS[m["id"]].status in ("running", "waiting"):
-                await send({"type": "session", "session": RUNS[m["id"]].agent.session, "live": True})
-            elif t == "open" and not busy():
-                s = A.load(m["id"])
-                if s:
-                    ag.session = s
-                    cfg["root"] = preview_root["path"] = s["root"]
-                    await send({"type": "session", "session": s})
-                    asyncio.create_task(ag.sync_mcp(s["root"]))
-            elif t == "new" and not busy():
-                ag.session = A.new_session(cfg["root"])
-                await send({"type": "session", "session": ag.session})
+                    asyncio.create_task(browser_msg(c, m))
+            elif (h := HANDLERS.get(t)):
+                await h(c, m)
     except WebSocketDisconnect:
         pass
     finally:
-        BROWSER.subs.discard(send)
-        MIRROR.pop(id(direct), None)
-        AGENTS.discard(ag)
+        BROWSER.subs.discard(c.send)
+        MIRROR.pop(id(c), None)
+        AGENTS.discard(c.ag)
         wtask.cancel()
-        if busy():
-            task.cancel()
-        await ag.shutdown()
+        if c.busy():
+            c.task.cancel()
+        await c.ag.shutdown()
 
 
 app.mount("/static", StaticFiles(directory=WEB), name="static")
