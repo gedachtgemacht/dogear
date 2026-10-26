@@ -1,0 +1,11 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Flow fixture</title>
+<style>body{font:16px sans-serif;padding:40px} input,button{font:inherit;padding:8px} #out{margin-top:20px;font-weight:bold}</style></head>
+<body>
+<h1>Search</h1>
+<form id="f" onsubmit="event.preventDefault(); document.getElementById('out').textContent = 'You searched: ' + document.getElementById('q').value;">
+  <input id="q" name="q" placeholder="What are you looking for?">
+  <button type="submit" aria-label="Search now">Go</button>
+</form>
+<p><a href="#more" id="more" onclick="document.getElementById('out').textContent += ' · more'">More</a></p>
+<div id="out"></div>
+</body></html>

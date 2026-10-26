@@ -494,6 +494,30 @@ def _console_note(b, since):
 
 
 @_wrap
+async def browser_flow(ctx, action="list", name="", check=None):
+    """Flows the user demonstrated in the live browser: list them, replay one, or mark one as a check for the quality gate."""
+    from . import flows
+    root = ctx.root
+    if action == "list":
+        fl = flows.list_flows(root)
+        if not fl:
+            return "No flows recorded yet. The user records one with the Record button in the browser panel."
+        return "\n".join(f"- {f['name']}: {f['steps']} steps" + (" (check)" if f["check"] else "") + (f", starts at {f['url']}" if f["url"] else "") for f in fl)
+    flow = flows.load(root, name) if name else None
+    if not flow:
+        raise ToolError(f"No flow named {name!r}. browser_flow(action='list') shows what exists.")
+    if action == "check":
+        flows.set_check(root, name, bool(check) if check is not None else True)
+        return f"Flow \"{flow['name']}\" is {'now' if check in (None, True) else 'no longer'} a check: it runs after every change to web files."
+    if action == "run":
+        b = _b(ctx)
+        r = await flows.replay(b, flow)
+        ctx.meta = {"flow": flow["name"], **{k: r[k] for k in ("ok", "done", "steps", "errors")}}
+        return flows.format_report(flow, r)
+    raise ToolError("action must be list, run or check")
+
+
+@_wrap
 async def browser_navigate(ctx, url):
     b = _b(ctx)
     if url.strip().lower().startswith(("file:", "about:", "chrome:")):
@@ -743,6 +767,10 @@ TOOLS = {
     "browser_scroll": ("browser", browser_scroll, _spec("browser_scroll", "Scroll the page.",
         {"direction": {"type": "string", "enum": ["up", "down"]}, "amount": _p(I, "pixels, default 600")}, [])),
     "browser_screenshot": ("browser", browser_screenshot, _spec("browser_screenshot", "Capture the current viewport as an image to inspect layout and visuals.", {}, [])),
+    "browser_flow": ("browser", browser_flow, _spec("browser_flow", "Flows the user recorded in the live browser (clicks, typing, navigation). "
+        "list them, run one to repeat it on the current page (e.g. the same steps for another item), or mark one as a check that runs after web changes.",
+        {"action": {"type": "string", "enum": ["list", "run", "check"]}, "name": {"type": "string", "description": "the flow's name (for run and check)"},
+         "check": _p(B, "for action=check: true marks, false unmarks")}, ["action"])),
     "browser_console": ("browser", browser_console, _spec("browser_console", "Read the page's console output (errors, warnings, logs) or failed network requests.",
         {"kind": {"type": "string", "enum": ["console", "network"]}, "clear": _p(B, "clear after reading")}, [])),
     "browser_eval": ("browser", browser_eval, _spec("browser_eval", "Run JavaScript in the page and return the JSON result.",

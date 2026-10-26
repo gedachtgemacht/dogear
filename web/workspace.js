@@ -92,7 +92,7 @@ async function eyeOn(p, a, b) {
 }
 
 /* ============================================================ browser (live, shared with the agent) */
-const B = { vw: 1280, vh: 800, scale: 1, hideT: 0, blank: true };
+const B = { vw: 1280, vh: 800, scale: 1, hideT: 0, blank: true, recording: false };
 const bcv = $("#bscreen"), bg = bcv.getContext("2d"), bbox = $("#bbox"), bov = $("#bov");
 function fit() {
   const s = $("#screen"), W = s.clientWidth - 28, H = s.clientHeight - 28; if (W <= 0 || H <= 0) return;
@@ -113,7 +113,13 @@ function agentAt(x, y, label) {
   clearTimeout(B.hideT); B.hideT = setTimeout(() => { c.hidden = true; }, 6000);
 }
 function ripple(x, y) { const r = el("div", "rip"); r.style.left = x * B.scale + "px"; r.style.top = y * B.scale + "px"; bov.append(r); setTimeout(() => r.remove(), 700); }
+function recState(m) {
+  B.recording = !!m.on;
+  const b = $("#b-rec"); b.classList.toggle("on", B.recording); b.textContent = B.recording ? "■ Stop recording" : "● Record";
+  if (!B.recording) $("#b-recname").hidden = true;
+}
 function browserEvent(m) {
+  if (m.type === "b_rec") return recState(m);
   switch (m.type) {
     case "frame": drawFrame(m); break;
     case "b_status": { if (m.state === "error") { $("#bempty").hidden = false; $("#bempty span").textContent = `Browser error: ${m.error}`; }
@@ -230,6 +236,14 @@ function initBrowser() {
   const home = () => { sendWS({ type: "b_open" }); sendWS({ type: "b_nav", url: (S.st?.preview || "http://127.0.0.1:7871") + "/" }); };
   $("#b-home").onclick = home; $("#b-start").onclick = home;
   $("#b-ext").onclick = () => { const u = $("#b-url").value; if (u) window.open(u, "_blank", "noopener"); };
+  // flows: record what the user does in the live view, name it, the agent replays it with browser_flow
+  $("#b-rec").onclick = () => {
+    if (B.recording) { $("#b-recname").hidden = false; $("#b-recinput").focus(); return; }
+    sendWS({ type: "b_open" }); sendWS({ type: "b_rec_start" });
+  };
+  $("#b-recsave").onclick = () => { sendWS({ type: "b_rec_stop", name: $("#b-recinput").value.trim() }); $("#b-recname").hidden = true; $("#b-recinput").value = ""; };
+  $("#b-recdrop").onclick = () => { sendWS({ type: "b_rec_stop", discard: true }); $("#b-recname").hidden = true; $("#b-recinput").value = ""; };
+  $("#b-recinput").onkeydown = e => { if (e.key === "Enter") $("#b-recsave").click(); if (e.key === "Escape") $("#b-recdrop").click(); };
   document.querySelectorAll(".devs button").forEach(b => b.onclick = () => {
     document.querySelectorAll(".devs button").forEach(x => x.classList.toggle("on", x === b));
     sendWS({ type: "b_viewport", w: +b.dataset.w, h: +b.dataset.h }); });

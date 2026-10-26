@@ -23,6 +23,7 @@
 - Plan execution: every task turn gets a fresh, small context (briefing with request, board and changed files, plus the task's own messages) instead of the whole transcript; the task log shows the context size.
 - Models pane: every installed model with measured tokens/s, tool-call slips per run, toolbox and prompt style, context limit warning; `/api/models`.
 - Direction chooser on the plan card for web briefs: pictures of the three closest design plans (rendered once, cached under `data/library-thumbs`), surprise me, or none; the choice goes into every task briefing.
+- Flows: record what you do in the live browser, replay it with `browser_flow`, mark it as a check that runs after web changes and shows on the receipt.
 - README, architecture notes, MIT license.
 
 ## Before 0.2.0

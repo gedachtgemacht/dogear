@@ -32,6 +32,7 @@ CHECKS = {
     "check_ultra.py": (["--offline"], set()),
     "check_library.py": ([], {"ollama"}),
     "check_audit.py": ([], {"chrome"}),
+    "check_flows.py": ([], {"chrome"}),
     "check_copycheck.py": ([], {"chrome", "ollama"}),
     "check_static_check.py": ([], {"dataset"}),
 }

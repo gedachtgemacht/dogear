@@ -171,6 +171,8 @@ READ_JS = r"""
 }
 """
 
+from .flows import DESCRIBE_JS  # noqa: E402
+
 REF_JS = r"""
 (ref) => {
   const el = window.__dogear && window.__dogear.els.get(ref) && window.__dogear.els.get(ref).deref();
@@ -212,6 +214,7 @@ class Browser:
         self._sent_at, self._flush = 0.0, None
         self.state = "stopped"
         self.errors_seen = 0
+        self.recorder = None                          # flows.Recorder while the user records a flow in the live view
         self.handoff: asyncio.Future | None = None
         self.overlay_locked = False
         self._metrics_at = 0.0
@@ -584,6 +587,8 @@ class Browser:
         await asyncio.sleep(0.35)
 
     async def insert(self, text):
+        if self.recorder:
+            self.recorder.text(text, None)
         await self.cdp.call("Input.insertText", {"text": text}, session=self.sess)
 
     async def key(self, spec):
@@ -620,6 +625,12 @@ class Browser:
         if not self.alive:
             return
         t = {"move": "mouseMoved", "down": "mousePressed", "up": "mouseReleased", "wheel": "mouseWheel"}[m["kind"]]
+        if self.recorder and t == "mousePressed" and m.get("button", "left") == "left":
+            try:
+                loc = await self.eval(f"({DESCRIBE_JS})({m['x']}, {m['y']})")
+            except BrowserError:
+                loc = None
+            self.recorder.click(loc, m["x"], m["y"])
         extra = {"deltaX": m.get("dx", 0), "deltaY": m.get("dy", 0)} if t == "mouseWheel" else {}
         await self._mouse(t, m["x"], m["y"], m.get("button", "left") if t != "mouseMoved" else "none", m.get("clicks", 1),
                           modifiers=m.get("mods", 0), **extra)
@@ -642,4 +653,9 @@ class Browser:
               "windowsVirtualKeyCode": m.get("vk", 0), "modifiers": m.get("mods", 0)}
         if m["kind"] == "down" and m.get("text"):
             ev["text"] = m["text"]
+        if self.recorder and m["kind"] == "down":
+            if m.get("text") and not (m.get("mods", 0) & 0b0110):
+                self.recorder.text(m["text"], None)
+            else:
+                self.recorder.key(m["key"])
         await self.cdp.call("Input.dispatchKeyEvent", ev, session=self.sess)

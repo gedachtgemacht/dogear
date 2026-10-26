@@ -603,3 +603,8 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 .pc-th:hover { border-color: var(--ink2); } .pc-th.on { border-color: var(--accent); color: var(--ink); } .pc-th:disabled { cursor: default; }
 .pc-th img, .pc-th .pc-tx { width: 162px; height: 101px; object-fit: cover; object-position: top; border-radius: 5px; background: var(--code); display: grid; place-items: center; font: 600 28px var(--ui); color: var(--mute); }
 .pc-th .pc-tl { font: 11.5px/1.3 var(--ui); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+/* ---- flow recording in the browser toolbar */
+.ptool .rec { font-size: 11.5px; font-family: var(--ui); margin-left: 6px; white-space: nowrap; }
+.ptool .rec.on { color: var(--bad); }
+.recname { display: flex; gap: 4px; align-items: center; } .recname input { width: 160px; font: 12px var(--ui); background: var(--panel2); border: 1px solid var(--accent); border-radius: 6px; padding: 3px 8px; outline: none; }

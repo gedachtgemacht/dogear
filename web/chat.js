@@ -141,6 +141,7 @@ function receiptEl(r) {
     row("Page", `${r.page.name}: ${txt}`, (after ?? before) ? "bad" : "ok");
   }
   if (r.console) row("Console", r.console.errors ? plural(r.console.errors, "error") : "no errors", r.console.errors ? "bad" : "ok");
+  if (r.flows) row("Flows", `${r.flows.passed}/${r.flows.total} recorded flows still work` + (r.flows.failed?.length ? `: ${r.flows.failed.map(f => f.name + (f.detail ? " (" + f.detail + ")" : "")).join("; ")}` : ""), r.flows.failed?.length ? "bad" : "ok");
   if (r.status === "unverified" && !r.tests && !r.page) row("Checked", "nothing: no tests were run and no page was measured", "warn");
   if (r.status === "stopped") row("Reason", r.reason || "", "warn");
   return box;

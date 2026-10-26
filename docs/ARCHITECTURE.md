@@ -51,6 +51,10 @@ Each connection has its own outbound queue and writer task; a slow window drops 
 
 `browser.py` starts Chrome headless with its own profile (`data/chrome-profile`) and speaks the DevTools protocol over a WebSocket, no Playwright. The screencast is forwarded to subscribed UI connections; user mouse and keyboard events from the UI canvas are forwarded to the page, so user and agent share one session. `browser_read` renders the page as text with element refs (`[e12]`), pierces open shadow roots, and reports consent dialogs and bot walls. Bot walls lead to `browser_handoff`: the run pauses, the UI shows "Your turn", the user solves it in the live view, and the run continues. Project files are served by a second server on port 7871, a different origin from the UI, so a page can never talk to the agent's API.
 
+## Flows
+
+`flows.py`. While the user records, the browser's forwarded input (clicks, keys, pasted text, navigation) goes through a `Recorder` that resolves each click to a locator (id, name, aria-label, visible text, CSS path) and buffers typing per field. Stop names the flow and writes `<project>/.dogear/flows/<name>.json`. `replay()` finds each element again, clicks, types and presses keys, waits for the page to settle and counts console errors; the `browser_flow` tool lists, runs and marks flows, and the quality gate replays every flow marked as a check after a run that touched web files (receipt row "Flows").
+
 ## Files on disk
 
 ```
@@ -65,7 +69,7 @@ data/
   profiles.json        manual profile overrides and the preferred helper model ("_helper")
   worktrees/           checkouts for parallel variants
   bench/               benchmark results
-<project>/.dogear/     project memory: memory/, snippets/, skills/ (travels with the repo)
+<project>/.dogear/     project memory: memory/, snippets/, skills/, flows/ (travels with the repo)
 ```
 
 ## The front end

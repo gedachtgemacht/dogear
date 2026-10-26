@@ -21,7 +21,7 @@ from . import checkpoint as cpt
 from . import worktrees as W
 from . import llm, profiles, tools
 from . import memory as mem
-from . import library, learning
+from . import library, learning, flows
 from .brand import NAME
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -677,7 +677,7 @@ async def on_new(c: Conn, m: dict):
 
 
 # --- the live browser: the UI's own clicks, keys and navigation go to the shared Chrome
-FAST_BROWSER = {"b_mouse", "b_key", "b_text", "b_resume", "b_scrollto"}      # keep ordered; the rest may take seconds
+FAST_BROWSER = {"b_mouse", "b_key", "b_text", "b_resume", "b_scrollto", "b_rec_start", "b_rec_stop"}      # keep ordered; the rest may take seconds
 
 
 async def browser_msg(c: Conn, m: dict):
@@ -698,7 +698,21 @@ async def browser_msg(c: Conn, m: dict):
                 BROWSER.handoff.set_result(True)
         elif t == "b_nav":
             BROWSER.subs.add(c.send)
+            if BROWSER.recorder:
+                BROWSER.recorder.navigate(m["url"])
             await BROWSER.navigate(m["url"])      # starts the browser if needed
+        elif t == "b_rec_start":
+            BROWSER.recorder = flows.Recorder(BROWSER.url)
+            await c.broadcast({"type": "b_rec", "on": True, "steps": 0})
+        elif t == "b_rec_stop":
+            rec, BROWSER.recorder = BROWSER.recorder, None
+            if rec:
+                rec.flush()
+                name = str(m.get("name") or f"flow {time.strftime('%H:%M')}")[:60]
+                if rec.steps and not m.get("discard"):
+                    f = flows.save(Path(c.cfg["root"]), name, rec.steps, rec.start_url, bool(m.get("check")))
+                    await c.send({"type": "notice", "text": f"Flow \"{name}\" saved with {len(rec.steps)} steps ({f.relative_to(Path(c.cfg['root']))}). The agent can replay it with browser_flow."})
+            await c.broadcast({"type": "b_rec", "on": False, "steps": len(rec.steps) if rec else 0})
         elif not BROWSER.alive:
             return
         elif t == "b_back":

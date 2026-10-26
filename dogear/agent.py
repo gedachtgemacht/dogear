@@ -77,6 +77,7 @@ class TurnStats:
     abort: bool = False
     reason: str = ""
     prompt_tokens: int = 0                             # the largest prompt the model saw in this turn
+    flows: dict | None = None                          # the recorded check flows replayed by the gate
 
 
 def _call_parts(c: dict) -> tuple[str, dict]:
@@ -1020,6 +1021,8 @@ class Agent:
             if self._audit_counts:
                 st.page = st.page or {"name": self._audit_counts["page"], "before": None, "after": None, "rounds": 0}
                 st.page["after"], st.page["rounds"] = self._audit_counts, 1
+        if last and not cancelled and final_idx is not None and cfg.mode != "plan" and web_files and self.browser is not None:
+            st.flows = await self._run_check_flows(ctx.root)
         if last and not _review and not cancelled and final_idx is not None and (gate or (
                 cfg.review_on and prof.review and st.changes and st.nsteps >= 6)):
             # the self-check pass: the model checks its result against the request (and fixes what the audit measured)
@@ -1056,6 +1059,25 @@ class Agent:
         if final_idx is not None and s["messages"][final_idx].get("content") and not cancelled:
             asyncio.create_task(self._name(s))      # the session title; the answer itself is shown as streamed, never re-rendered
 
+    async def _run_check_flows(self, root: Path) -> dict | None:
+        """Replay the flows the user marked as checks; the receipt shows how many still work."""
+        from . import flows
+        checks = [f for f in flows.list_flows(root) if f["check"]]
+        if not checks:
+            return None
+        out = {"passed": 0, "failed": [], "total": len(checks)}
+        for f in checks:
+            flow = flows.load(root, f["name"])
+            try:
+                r = await flows.replay(self.browser, flow)
+            except Exception as e:
+                r = {"ok": False, "detail": str(e)[:160], "errors": 0, "done": 0, "steps": f["steps"]}
+            if r["ok"]:
+                out["passed"] += 1
+            else:
+                out["failed"].append({"name": f["name"], "detail": r.get("detail") or (f"{r['errors']} console errors" if r.get("errors") else "")})
+        return out
+
     def _receipt(self, st: "TurnStats", stopped: bool) -> dict:
         """What the harness itself knows about the result: tests it saw run, the page it measured, console errors it caught.
         The status is computed here, not claimed by the model."""
@@ -1080,13 +1102,15 @@ class Agent:
                 (doubts if open_ else proofs).append(f"page: {open_} open finding{'s' if open_ != 1 else ''}" if open_ else "page: audit clean")
             if console and console["errors"]:
                 doubts.append(f"console: {console['errors']} error{'s' if console['errors'] != 1 else ''}")
+            if st.flows:
+                (doubts if st.flows["failed"] else proofs).append(f"flows: {st.flows['passed']}/{st.flows['total']} ok")
             if doubts:
                 status, reason = "unverified", "; ".join(doubts)
             elif proofs:
                 status, reason = "verified", "; ".join(proofs)
             else:
                 status, reason = "unverified", "no tests run and no page measured"
-        return {"status": status, "reason": reason, "tests": tests, "page": page, "console": console}
+        return {"status": status, "reason": reason, "tests": tests, "page": page, "console": console, "flows": st.flows}
 
     def _task_window(self, s: dict, _task: dict) -> list[dict]:
         """What the model sees in a task turn: not the whole transcript, only what this task needs.
