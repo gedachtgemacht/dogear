@@ -29,7 +29,7 @@ async def stream(client, model, messages, tools, think, num_ctx):
             async for ev in remote.stream(client, *sp, messages, tools, think, tuned=getattr(client, "tune_remote", None)):
                 yield ev
         except remote.RemoteError as e:
-            raise LLMError(str(e)) from e
+            raise LLMError(f"{sp[0]} {e}" if str(e).startswith("answered") else str(e)) from e
         return
     body = {
         "model": model,

@@ -147,6 +147,29 @@ def to_openai(messages: list[dict]) -> list[dict]:
 
 # ------------------------------------------------------------------ streaming
 
+class _open:
+    """The POST as a context manager; a 400 that objects to the `reasoning` parameter is retried once without it."""
+
+    def __init__(self, client, p, body, headers):
+        self.client, self.p, self.body, self.headers, self.cm = client, p, body, headers, None
+
+    async def __aenter__(self):
+        for attempt in range(2):
+            self.cm = self.client.stream("POST", f"{self.p['base_url']}/chat/completions", json=self.body, headers=self.headers, timeout=None)
+            r = await self.cm.__aenter__()
+            if r.status_code == 200:
+                return r
+            text = (await r.aread()).decode()[:500]
+            await self.cm.__aexit__(None, None, None)
+            if attempt == 0 and r.status_code == 400 and "reasoning" in text.lower() and "reasoning" in self.body:
+                self.body.pop("reasoning")
+                continue
+            raise RemoteError(f"answered {r.status_code}: {text}")
+        raise RemoteError("request failed")
+
+    async def __aexit__(self, *a):
+        return await self.cm.__aexit__(*a)
+
 async def stream(client, name: str, p: dict, model_id: str, messages, tools, think, tuned=None):
     """Yields ('thinking'|'content'|'call'|'done', payload) in the same shape as llm.stream, so the agent does not
     know which kind of model answers. `done` carries Ollama's counters plus `cost` (OpenRouter) and `remote`."""
@@ -158,7 +181,8 @@ async def stream(client, name: str, p: dict, model_id: str, messages, tools, thi
     openrouter = "openrouter" in p["host"]
     if openrouter:
         body["usage"] = {"include": True}
-        body["reasoning"] = {"enabled": bool(think)}
+        if think:                       # asked for; when not asked, the model keeps its own default (some cannot switch it off)
+            body["reasoning"] = {"enabled": True}
     if tuned:
         tuned(body)
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -166,9 +190,7 @@ async def stream(client, name: str, p: dict, model_id: str, messages, tools, thi
         headers["X-Title"] = "dogear"
     t0, first, out_tokens, calls = time.time(), None, 0, {}
     usage, finish = {}, None
-    async with client.stream("POST", f"{p['base_url']}/chat/completions", json=body, headers=headers, timeout=None) as r:
-        if r.status_code != 200:
-            raise RemoteError(f"{name} answered {r.status_code}: {(await r.aread()).decode()[:500]}")
+    async with _open(client, p, body, headers) as r:
         it = r.aiter_lines().__aiter__()
         while True:
             try:
