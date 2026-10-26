@@ -24,15 +24,16 @@ function sbInit() {
   sbTab(SB.tab);
 }
 function sbTab(t) {
-  if (!["files", "sessions", "memory", "mcp"].includes(t)) t = "sessions";
+  if (!["files", "sessions", "memory", "mcp", "models"].includes(t)) t = "sessions";
   SB.tab = t; store.set("dogear-sb-tab", t);
   document.querySelectorAll("#dtabs button").forEach(b => { const on = b.dataset.t === t; b.classList.toggle("on", on); b.setAttribute("aria-selected", String(on)); });
   document.querySelectorAll(".dpane").forEach(p => { p.hidden = p.id !== "dp-" + t; });
   if (t === "memory") loadMemory();
+  if (t === "models") renderModels();
   renderPane();
 }
 function renderPane() {
-  ({ files: renderFiles, sessions: renderSessions, memory: renderMemory, mcp: renderMcp })[SB.tab]?.();
+  ({ files: renderFiles, sessions: renderSessions, memory: renderMemory, mcp: renderMcp, models: () => {} })[SB.tab]?.();
   sbBadges();
 }
 function sbBadges() {
@@ -270,4 +271,35 @@ function renderMcp(servers) {
     d.onclick = () => sm.hidden = !sm.hidden; box.append(d);
   }
   sbBadges();
+}
+
+/* ---------------------------------------------------------------- models: what dogear measured about each installed model */
+async function renderModels() {
+  const box = $("#models"); box.innerHTML = "";
+  let d;
+  try { d = await (await fetch("/api/models")).json(); } catch { box.append(el("div", "dempty", "Ollama is not reachable.")); return; }
+  const chosenCtx = +$("#ctx").value || d.num_ctx;
+  for (const m of d.models) {
+    const row = el("div", "mrow" + (m.model === $("#model").value ? " on" : ""));
+    const head = el("div", "mh");
+    head.append(el("b", "", m.model));
+    if (m.helper) head.append(el("span", "chip", "helper"));
+    if (!m.tools) head.append(el("span", "chip bad", "no tool calls"));
+    row.append(head);
+    const size = m.params_b ? `${m.params_b >= 10 ? m.params_b.toFixed(0) : m.params_b.toFixed(1)}B${m.moe ? " MoE" : ""}` : "size unknown";
+    const caps = [m.vision ? "vision" : null, m.thinking ? "reasoning" : null].filter(Boolean).join(", ");
+    row.append(el("div", "ml", `${size}${caps ? " · " + caps : ""} · context up to ${m.ctx_max ? Math.round(m.ctx_max / 1024) + "k" : "?"}`));
+    const st = m.stats || {};
+    const parts = [];
+    if (st.tps) parts.push(`${st.tps} tokens/s measured`);
+    if (st.runs) parts.push(st.slip_rate ? `${st.announced + st.malformed + st.text_calls} tool-call slips in ${st.runs} runs` : `${st.runs} runs, no tool-call slips`);
+    else parts.push("not used yet");
+    row.append(el("div", "ml", parts.join(" · ")));
+    row.append(el("div", "ml", `toolbox ${m.toolbox} (${m.tools_loaded} tools) · prompt ${m.prompt}`));
+    if (m.ctx_max && chosenCtx > m.ctx_max) row.append(el("div", "ml warn", `The chosen context (${Math.round(chosenCtx / 1024)}k) is larger than this model supports.`));
+    if (st.slip_rate >= 0.3) row.append(el("div", "ml warn", "Often writes a tool call as text instead of making it: a smaller toolbox helps (scripts/calibrate.py)."));
+    const use = el("button", "mini use", "Use"); use.onclick = () => { $("#model").value = m.model; renderModels(); }; head.append(use);
+    box.append(row);
+  }
+  box.append(el("div", "dempty", "Measure a new model's best toolbox: uv run python scripts/calibrate.py MODEL"));
 }

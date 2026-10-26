@@ -633,6 +633,8 @@ class Agent:
                 s["messages"].append(msg)
                 ev = done.get("eval_count", 0)
                 st.prompt_tokens = max(st.prompt_tokens, int(done.get("prompt_eval_count", 0) or 0))
+                if ev >= 40:                                 # short answers measure nothing but latency
+                    profiles.note_tps(cfg.model, ev / max(done.get("eval_duration", 1) / 1e9, 0.001))
                 await self.send({"type": "usage", "prompt": done.get("prompt_eval_count", 0), "out": ev,
                                  "tps": round(ev / max(done.get("eval_duration", 1) / 1e9, 0.001), 1), "ctx": cfg.num_ctx})
                 if not calls:

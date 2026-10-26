@@ -21,6 +21,7 @@
 - Answers render Markdown tables, numbered lists and rules; the prompt asks for plain words instead of emoji markers.
 - Code: `Agent.turn()` split into named pieces with `RunConfig` and `TurnStats`; the WebSocket handler is a table of small functions on a `Conn` object; library learning moved to `learning.py`; silent exceptions now log; one shared `rel_paths`.
 - Plan execution: every task turn gets a fresh, small context (briefing with request, board and changed files, plus the task's own messages) instead of the whole transcript; the task log shows the context size.
+- Models pane: every installed model with measured tokens/s, tool-call slips per run, toolbox and prompt style, context limit warning; `/api/models`.
 - README, architecture notes, MIT license.
 
 ## Before 0.2.0

@@ -27,7 +27,7 @@ dogear talks to a local model through [Ollama](https://ollama.com), gives it the
 - **Memory.** Notes the agent keeps (decisions, gotchas, commands, preferences) per project (`<project>/.dogear/`) or globally, and a library of 300 solved design briefs with embeddings that the plan phase draws on for web work.
 - **Skills.** Markdown skill files with triggers (`skills/*.md`, plus `<project>/.dogear/skills/`) are loaded into the prompt when the task matches: web design, debugging, testing, code review, API design, security review and more.
 - **MCP.** Connect any MCP server over stdio or Streamable HTTP; its tools appear to the model as `mcp__<server>__<tool>`.
-- **Model profiles.** Every model is recognised the first time it is used (size, MoE, tools, vision, reasoning) and gets a toolbox and prompt style that fits it. Small models get a lean toolbox and rescue logic for tool calls they write as text.
+- **Model profiles, with numbers.** Every model is recognised the first time it is used (size, MoE, tools, vision, reasoning) and gets a toolbox and prompt style that fits it. The Models pane (settings) shows what dogear measured: tokens per second, how often the model slipped on tool calls, the toolbox in use, and a warning when the chosen context is larger than the model supports. Small models get a lean toolbox and rescue logic for tool calls they write as text.
 - **Context care.** `/compact` condenses the conversation into a briefing; it happens automatically when the context window is 70 % full. Images can be attached, pasted or dropped.
 
 <p align="center">

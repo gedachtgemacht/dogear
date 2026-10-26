@@ -215,6 +215,32 @@ async def pick_helper(client: httpx.AsyncClient, avoid: str = "") -> str | None:
 
 # ------------------------------------------------------------------ learning
 
+def note_tps(model: str, tps: float):
+    """One measured generation speed; the model page shows the running average."""
+    if tps <= 0:
+        return
+    try:
+        st = _load_json(STATS_FILE)
+        m = st.setdefault(model, {})
+        m["tps_sum"] = m.get("tps_sum", 0.0) + float(tps)
+        m["tps_n"] = m.get("tps_n", 0) + 1
+        STATS_FILE.write_text(json.dumps(st, indent=1))
+    except OSError:
+        pass
+
+
+def stats_for(model: str) -> dict:
+    """What dogear measured about a model so far, in the terms the model page shows."""
+    st = _load_json(STATS_FILE).get(model, {})
+    runs = int(st.get("runs", 0))
+    out = {"runs": runs, "announced": int(st.get("announced", 0)), "malformed": int(st.get("malformed", 0)),
+           "text_calls": int(st.get("text_calls", 0)), "tool_errors": int(st.get("tool_errors", 0)),
+           "tps": round(st["tps_sum"] / st["tps_n"], 1) if st.get("tps_n") else None}
+    slips = out["announced"] + out["malformed"] + out["text_calls"]
+    out["slip_rate"] = round(slips / runs, 2) if runs else None       # tool-call slips per run
+    return out
+
+
 def note_issue(model: str, kind: str, n: int = 1):
     """kind: run | text_calls | announced | malformed | tool_errors | steps"""
     try:

@@ -310,6 +310,8 @@ function connect() {
   $("#new").onclick = $("#new-top").onclick = () => !S.busy && sendWS({ type: "new" });
   $("#refresh").onclick = renderTree; $("#mcp-reload").onclick = () => sendWS({ type: "mcp_reload" }); $("#mem-add").onclick = memForm;
   $("#open-memory").onclick = () => { $("#pop").hidden = true; drawer(true); sbTab("memory"); };
+  $("#open-models").onclick = () => { $("#pop").hidden = true; drawer(true); sbTab("models"); };
+  $("#models-reload").onclick = () => renderModels();
   $("#open-mcp").onclick = () => { $("#pop").hidden = true; drawer(true); sbTab("mcp"); };
   initBrowser();
   $("#cmp-x").onclick = () => { $("#cmp").hidden = true; };

@@ -587,3 +587,11 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 .tasks .tl { border-top: 1px solid var(--line); padding: 6px 12px 8px; display: flex; flex-direction: column; gap: 4px; }
 .tasks .ti { display: flex; gap: 10px; color: var(--ink2); } .tasks .ti.completed { color: var(--mute); } .tasks .ti.in_progress { color: var(--ink); }
 .tasks .mark { flex: none; width: 14px; font: 12px var(--mono); color: var(--mute); } .tasks .ti.in_progress .mark { color: var(--accent); } .tasks .ti.completed .mark { color: var(--ok); }
+
+/* ---- models pane */
+.mrow { padding: 8px 8px; border-radius: 7px; display: flex; flex-direction: column; gap: 2px; }
+.mrow.on { background: var(--panel3); }
+.mrow .mh { display: flex; align-items: center; gap: 8px; } .mrow .mh b { font: 500 13px var(--ui); color: var(--ink); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mrow .ml { font: 12px var(--ui); color: var(--ink2); } .mrow .ml.warn { color: var(--accent); }
+.mrow .use { margin: 0; border: 1px solid var(--line); padding: 1px 8px; } .mrow.on .use { visibility: hidden; }
+.chip.bad { color: var(--bad); border-color: var(--bad); }

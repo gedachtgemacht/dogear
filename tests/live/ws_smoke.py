@@ -17,6 +17,9 @@ def check(name, cond):
 
 
 async def main():
+    import httpx
+    d = httpx.get("http://127.0.0.1:7870/api/models", timeout=30).json()
+    check("/api/models lists the installed models with statistics", d["models"] and all("stats" in m and "toolbox" in m for m in d["models"]))
     async with websockets.connect(URL, max_size=None, origin=ORIGIN) as ws:
         async def recv(kind, timeout=10):
             while True:

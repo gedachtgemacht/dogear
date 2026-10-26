@@ -131,6 +131,20 @@ async def profile(model: str, reset: bool = False):
     return {**p.summary(), "tools_loaded": p.tool_names(list(tools.TOOLS)) if p.tools else []}
 
 
+@app.get("/api/models")
+async def models_page():
+    """Every installed model with what dogear knows and measured about it (for the Models pane)."""
+    helper = await profiles.pick_helper(client)
+    out = []
+    for p in await profiles.list_profiles(client):
+        d = p.summary()
+        d["stats"] = profiles.stats_for(p.model)
+        d["helper"] = p.model == helper
+        d["tools_loaded"] = len(p.tool_names(list(tools.TOOLS))) if p.tools else 0
+        out.append(d)
+    return {"models": out, "default": settings()["model"], "num_ctx": settings()["num_ctx"]}
+
+
 TREE_CAP = 300
 
 

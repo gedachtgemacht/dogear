@@ -48,7 +48,7 @@
       <label class="row"><input type="checkbox" id="review"><span>Self-check after larger changes</span></label>
       <label class="row"><input type="checkbox" id="variants"><span>Offer parallel variants (shares GPU and browser)</span></label>
       <h5>More</h5>
-      <div class="prow"><button id="open-memory" class="row">Memory and notes…</button><button id="open-mcp" class="row">MCP servers…</button></div>
+      <div class="prow"><button id="open-models" class="row">Models…</button><button id="open-memory" class="row">Memory…</button><button id="open-mcp" class="row">MCP…</button></div>
       <button id="theme" class="row">Switch light / dark</button>
     </div>
   </header>
@@ -119,6 +119,7 @@
         <button data-t="files" role="tab">Files <i id="bd-files"></i></button>
         <button data-t="memory" role="tab" hidden>Memory <i id="bd-memory"></i></button>
         <button data-t="mcp" role="tab" hidden>MCP <i id="bd-mcp"></i></button>
+        <button data-t="models" role="tab" hidden>Models</button>
       </nav>
       <div class="dpane" id="dp-files" hidden>
         <div class="dhead">
@@ -143,6 +144,10 @@
           <div id="memform" hidden></div>
         </div>
         <div class="dlist" id="mlist"></div>
+      </div>
+      <div class="dpane" id="dp-models" hidden>
+        <div class="dhead"><div class="proj"><b>Models</b><span>what dogear measured</span><button class="mini" id="models-reload" title="Refresh">↻</button></div></div>
+        <div class="dlist" id="models"></div>
       </div>
       <div class="dpane" id="dp-mcp" hidden>
         <div class="dhead"><div class="proj"><b>MCP servers</b><span></span><button class="mini" id="mcp-reload" title="Reload servers">↻</button></div></div>
