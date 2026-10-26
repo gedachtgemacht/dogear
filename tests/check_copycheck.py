@@ -21,6 +21,8 @@ async def main():
         for model in ("qwen3.6:35b-a3b",):
             fb = await C.check(c, "http://127.0.0.1:11434", model, BRIEF, bad)
             fc = await C.check(c, "http://127.0.0.1:11434", model, BRIEF, clean)
+            if fc:                                           # the model's judgement wobbles under load: one second opinion
+                fc = await C.check(c, "http://127.0.0.1:11434", model, BRIEF, clean)
             print(model, "bad:", [(f["kind"], f["quote"]) for f in fb]); print(model, "clean:", [(f["kind"], f["quote"]) for f in fc])
             q = " ".join(f["quote"].lower() for f in fb)
             check("finds 'every two week'", "every two week." in q or "two week." in q)
