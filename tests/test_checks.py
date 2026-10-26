@@ -26,6 +26,7 @@ CHECKS = {
     "check_devtools_code.py": ([], set()),
     "check_mcp_http.py": ([], set()),
     "check_planning.py": ([], set()),
+    "check_approvals.py": ([], set()),
     "check_ultra.py": (["--offline"], set()),
     "check_library.py": ([], {"ollama"}),
     "check_audit.py": ([], {"chrome"}),

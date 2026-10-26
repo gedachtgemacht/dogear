@@ -410,9 +410,11 @@ async def ws(sock: WebSocket):
     ag.mirror = mirror
     MIRROR[id(direct)] = direct
     AGENTS.add(ag)
-    for other in AGENTS:                      # joining while a turn runs: show it from the start
+    for other in AGENTS:                      # joining while a turn runs: show it from the start, including what it waits for
         if other is not ag and other.running:
             await direct({"type": "turn_start", "session": other.session})
+            for ev in list(other.pending_info.values()):
+                await direct(ev)
     cfg = settings()
     ag.session = A.new_session(cfg["root"])
     task: asyncio.Task | None = None

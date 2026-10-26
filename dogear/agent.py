@@ -324,6 +324,7 @@ class Agent:
         self.procs = tools.Procs(send)
         self.mcp = MCP()
         self.pending: dict[str, asyncio.Future] = {}
+        self.pending_info: dict[str, dict] = {}     # the open approval / question events, re-sent to windows that join later
         self.always: set[str] = set()
         self.session: dict | None = None
         self.running = False
@@ -347,11 +348,14 @@ class Agent:
     async def _ask(self, cid, name, args) -> bool:
         fut = asyncio.get_running_loop().create_future()
         self.pending[cid] = fut
-        await self.send({"type": "approval", "id": cid, "name": name, "args": args, "key": self._key(name, args)})
+        ev = {"type": "approval", "id": cid, "name": name, "args": args, "key": self._key(name, args)}
+        self.pending_info[cid] = ev
+        await self.send(ev)
         try:
             return await fut
         finally:
             self.pending.pop(cid, None)
+            self.pending_info.pop(cid, None)
 
     def answer(self, cid: str, ok: bool, always: bool = False, key: str = ""):
         if always and ok and key:
@@ -363,11 +367,14 @@ class Agent:
     async def _ask_user(self, cid: str, questions: list[dict]) -> str:
         fut = asyncio.get_running_loop().create_future()
         self.asks[cid] = fut
-        await self.send({"type": "ask", "id": cid, "questions": questions})
+        ev = {"type": "ask", "id": cid, "questions": questions}
+        self.pending_info[cid] = ev
+        await self.send(ev)
         try:
             value = await fut
         finally:
             self.asks.pop(cid, None)
+            self.pending_info.pop(cid, None)
         lines = []
         answers = value if isinstance(value, list) else [{"selected": [], "other": str(value)}]
         for i, q in enumerate(questions):
