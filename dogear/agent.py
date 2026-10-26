@@ -386,6 +386,7 @@ class Agent:
         self.mode = "edit"                           # the live permission mode; the UI may change it while a turn runs
         self.last_tokens = 0
         self._plan_cp: str | None = None             # the checkpoint a plan execution started from
+        self._refs: list[dict] = []                  # design plans found for a web brief in the plan phase (the user picks one)
 
     async def sync_mcp(self, root: str):
         try:
@@ -672,6 +673,8 @@ class Agent:
                 if ctx.plan:
                     # planning phase done: the board goes to the user for approval, nothing is executed yet
                     plan = ctx.plan
+                    if self._refs:
+                        plan["references"] = self._refs
                     body = plan["reasoning"] + "\n\n" + "\n".join(f"{i}. {t['content']}" for i, t in enumerate(plan["tasks"], 1))
                     s["messages"].append({"role": "assistant", "content": body, "plan": plan})
                     final_idx = len(s["messages"]) - 1
@@ -783,6 +786,11 @@ class Agent:
         skills, skill_names = load_skills(text, ctx.root)
         if skill_names:
             await self.send({"type": "notice", "text": "Skills: " + ", ".join(skill_names)})
+        self._refs = []
+        if cfg.mode == "plan" and "web-design" in skill_names:
+            # the user picks the direction on the approval card; the model sees the chosen plan in every task briefing
+            self._refs = [{"id": h["id"], "problem": h["problem"][:160], "solution": h["solution"][:1500], "score": h.get("score", 0)}
+                          for h in await self._library(text, 3, "design-plan")]
         if cfg.mode != "plan" and "web-design" in skill_names:
             refs = await self._library(text, 2, "design-plan")   # reference designs for page briefs: direction, not templates
             if refs:
@@ -1092,8 +1100,24 @@ class Agent:
         changed = cp.changed_since(Path(s["root"]), self._plan_cp) if self._plan_cp else []
         brief = ("[Briefing for this task]\nOriginal request:\n" + request[:3000]
                  + (f"\n\nApproved plan:\n{board}" if board else "")
-                 + (f"\n\nFiles changed so far in this plan: {', '.join(changed[:40])}" if changed else ""))
+                 + (f"\n\nFiles changed so far in this plan: {', '.join(changed[:40])}" if changed else "")
+                 + self._direction((pm or {}).get("plan", {})))
         return [{"role": "user", "content": brief}, {"role": "assistant", "content": "Understood. I will carry out the current task."}] + msgs[start:]
+
+    @staticmethod
+    def _direction(plan: dict) -> str:
+        """The design direction the user chose on the approval card, as a briefing block."""
+        ref = plan.get("reference")
+        if ref in (None, "", "none"):
+            return ""
+        if ref == "surprise":
+            return ("\n\nDesign direction: the user wants a distinctive look. Choose one clear concept yourself (world, palette, type, "
+                    "one signature move) before writing markup, and keep it through every section. Not the default card grid.")
+        entry = library.get(int(ref)) if str(ref).isdigit() else None
+        if not entry:
+            return ""
+        return ("\n\nDesign direction chosen by the user (follow its palette, type and signature move; adapt the content to this brief):\n"
+                + entry["solution"][:2500])
 
     async def run_plan(self, pm: dict, tasks: list[dict], model: str, think: bool, mode: str, num_ctx: int, review_on: bool):
         """Phase 3: carry out an approved board one task per turn. Each task ends with complete_current_task (logged, next task)

@@ -139,6 +139,21 @@ async def search(client, url: str, query: str, k: int = 3, language: str = "") -
     return out[:k]
 
 
+def get(entry_id: int, full: bool = False) -> dict | None:
+    """One entry by id; with full=True the bulk text (the page of a design plan) comes along."""
+    db = _db()
+    try:
+        r = db.execute(f"SELECT {COLS}{', extra' if full else ''} FROM entries WHERE id = ?", (int(entry_id),)).fetchone()
+    finally:
+        db.close()
+    if not r:
+        return None
+    d = _row(r[:11])
+    if full:
+        d["extra"] = r[11] or ""
+    return d
+
+
 def entries(limit: int = 200) -> list[dict]:
     db = _db()
     try:

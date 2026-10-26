@@ -360,13 +360,36 @@ function planCard(t, plan) {
       rows.append(add);
     }
   };
+  // the direction: three solved briefs that look like this one, as pictures; the chosen one goes into every task briefing
+  let direction = plan.reference ?? null;
+  const dir = el("div", "pc-dir");
+  const drawDir = () => {
+    dir.innerHTML = "";
+    const refs = plan.references || [];
+    if (!refs.length) { dir.hidden = true; return; }
+    dir.hidden = false;
+    const editable = plan.status === "proposed";
+    dir.append(el("div", "pc-dh", editable ? "Direction: pick a look, or let the model choose" : "Direction"));
+    const row = el("div", "pc-thumbs");
+    const opt = (key, node, title) => {
+      const b = el("button", "pc-th" + (direction === key ? " on" : "")); b.type = "button"; b.title = title || "";
+      b.append(node, el("span", "pc-tl", title || ""));
+      if (editable) b.onclick = () => { direction = key; drawDir(); }; else b.disabled = true;
+      if (!editable && direction !== key) b.hidden = true;
+      row.append(b);
+    };
+    refs.forEach(r => { const im = el("img"); im.loading = "lazy"; im.src = `/api/thumb/${r.id}`; im.alt = r.problem; opt(r.id, im, r.problem.slice(0, 60)); });
+    opt("surprise", el("div", "pc-tx", "?"), "Surprise me: a distinctive look of its own");
+    opt("none", el("div", "pc-tx", "–"), "No direction");
+    dir.append(row);
+  };
   const label = { proposed: "waiting for your approval", approved: "running task by task", rejected: "rejected", replan: "needs a new plan", done: "done", stopped: "stopped" };
   const paint = () => {
     state.textContent = label[plan.status] || plan.status; state.className = "pc-s " + plan.status;
     act.innerHTML = "";
     if (plan.status === "proposed") {
       const go = el("button", "primary", "Approve and run"); go.title = `Runs in the current mode (${MODE_TXT[S.mode]})`;
-      go.onclick = () => { if (!tasks.length) return; sendWS({ type: "plan_approve", tasks, mode: S.mode }); setBusy(true); };
+      go.onclick = () => { if (!tasks.length) return; plan.reference = direction; sendWS({ type: "plan_approve", tasks, mode: S.mode, reference: direction }); setBusy(true); };
       const rej = el("button", "", "Revise…");
       rej.onclick = () => {
         act.innerHTML = ""; const ta = el("textarea"); ta.placeholder = "What should change? The model plans again with your feedback."; ta.rows = 3;
@@ -378,11 +401,11 @@ function planCard(t, plan) {
     } else if (plan.status === "rejected" && plan.feedback) act.append(el("div", "pc-fb", "Feedback: " + plan.feedback));
     else if (plan.status === "replan" && plan.feedback) act.append(el("div", "pc-fb", "Reason: " + plan.feedback));
   };
-  box.append(head, why, rows, act); t.after.append(box);
+  box.append(head, why, dir, rows, act); t.after.append(box);
   plan.status = plan.status || "proposed";
-  draw(); paint();
+  draw(); drawDir(); paint();
   S.planCard = {
-    update: m => { plan.status = m.status; if (m.tasks) { tasks.length = 0; m.tasks.forEach(x => tasks.push({ content: x.content, detail: x.detail || "" })); } if (m.feedback) plan.feedback = m.feedback; draw(); paint(); },
+    update: m => { plan.status = m.status; if (m.tasks) { tasks.length = 0; m.tasks.forEach(x => tasks.push({ content: x.content, detail: x.detail || "" })); } if (m.feedback) plan.feedback = m.feedback; draw(); drawDir(); paint(); },
     task: m => { plan.log = plan.log || []; plan.log[m.i] = m; draw(); },
   };
 }

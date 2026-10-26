@@ -131,6 +131,39 @@ async def profile(model: str, reset: bool = False):
     return {**p.summary(), "tools_loaded": p.tool_names(list(tools.TOOLS)) if p.tools else []}
 
 
+THUMBS = A.DATA / "library-thumbs"
+THUMB_BROWSER: br.Browser | None = None
+_thumb_lock = asyncio.Lock()
+
+
+@app.get("/api/thumb/{entry_id}")
+async def thumb(entry_id: int):
+    """A small picture of a design plan's page, rendered once in a browser of its own and cached."""
+    global THUMB_BROWSER
+    THUMBS.mkdir(parents=True, exist_ok=True)
+    out = THUMBS / f"{entry_id}.jpg"
+    if out.exists():
+        return FileResponse(out, media_type="image/jpeg")
+    e = library.get(entry_id, full=True)
+    if not e or not e.get("extra"):
+        raise HTTPException(404)
+    page = THUMBS / f"{entry_id}.html"
+    page.write_text(e["extra"])
+    async with _thumb_lock:
+        if THUMB_BROWSER is None:
+            THUMB_BROWSER = br.Browser(A.DATA / "thumb-profile")
+        b = THUMB_BROWSER
+        await b.ensure()
+        await b.set_viewport(1280, 800)
+        await b.cdp.call("Page.navigate", {"url": page.as_uri()}, session=b.sess)
+        await asyncio.sleep(0.8)
+        r = await b.cdp.call("Page.captureScreenshot", {"format": "jpeg", "quality": 68,
+                             "clip": {"x": 0, "y": 0, "width": 1280, "height": 800, "scale": 0.4}}, session=b.sess)
+    import base64
+    out.write_bytes(base64.b64decode(r["data"]))
+    return FileResponse(out, media_type="image/jpeg")
+
+
 @app.get("/api/models")
 async def models_page():
     """Every installed model with what dogear knows and measured about it (for the Models pane)."""
@@ -384,7 +417,8 @@ async def on_plan_approve(c: Conn, m: dict):
     if not edited:
         await c.send({"type": "notice", "text": "The plan has no tasks left."})
         return
-    pm["plan"].update(status="approved", tasks=edited, log=[])
+    ref = m.get("reference")
+    pm["plan"].update(status="approved", tasks=edited, log=[], reference=ref if ref in ("none", "surprise") or isinstance(ref, int) else None)
     c.ag.session["todos"] = [{"content": t["content"], "status": "pending"} for t in edited]
     A.save(c.ag.session)
     await c.send({"type": "plan_status", "status": "approved", "tasks": edited})
