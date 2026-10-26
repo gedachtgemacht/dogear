@@ -10,27 +10,28 @@
 <body>
 <div class="app">
   <header class="bar">
-    <button class="icon" id="menu" title="Projects, files, history" aria-label="Menu">
+    <button class="icon" id="menu" title="Sessions and files" aria-label="Menu">
       <svg viewBox="0 0 16 16" width="16" height="16"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
     </button>
     <div class="brand">
       <svg class="logo" viewBox="0 0 64 64" width="24" height="24" aria-hidden="true"><path class="lb" d="M18 8 H38 L56 26 V46 A10 10 0 0 1 46 56 H18 A10 10 0 0 1 8 46 V18 A10 10 0 0 1 18 8 Z"/><path d="M38 8 V20 A6 6 0 0 0 44 26 H56 Z" fill="#d97b2c"/></svg>
       <span>dogear</span>
     </div>
-    <input id="root" class="path" spellcheck="false" title="Project directory">
+    <input id="root" class="path" spellcheck="false" title="Project directory (new sessions start here)">
+    <button class="icon" id="new-top" title="New session" aria-label="New session">
+      <svg viewBox="0 0 16 16" width="16" height="16"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
     <div class="ctrls">
-      <select id="model" title="Model"></select>
-      <div class="seg" id="mode" role="radiogroup" aria-label="Permissions">
-        <button data-v="ask" title="Confirm every edit and command">Review</button>
-        <button data-v="edit" title="Edit files freely, confirm commands (Shift+Tab)">Edits</button>
-        <button data-v="auto" title="Never ask">Auto</button>
-        <button data-v="plan" title="Read-only: investigates and proposes a plan, changes nothing">Plan</button>
+      <div class="runctl">
+        <select id="model" title="Model"></select>
+        <div class="seg" id="mode" role="radiogroup" aria-label="How much to ask">
+          <button data-v="ask" title="Asks before every edit and every command">Ask all</button>
+          <button data-v="edit" title="Edits files freely, asks before commands (Shift+Tab cycles)">Ask commands</button>
+          <button data-v="auto" title="Never asks">Don't ask</button>
+        </div>
+        <div class="meter" id="meter" title="Context window usage"><span class="bar-bg"><i></i></span><b></b></div>
       </div>
-      <div class="meter" id="meter" title="Context window usage"><span class="bar-bg"><i></i></span><b>0 / 32k</b></div>
-      <button class="icon" id="plan-toggle" title="Plan board (kanban)" aria-label="Plan board">
-        <svg viewBox="0 0 16 16" width="16" height="16"><rect x="1.75" y="2.25" width="3.5" height="11.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6.25" y="2.25" width="3.5" height="7.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="10.75" y="2.25" width="3.5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
-      </button>
-      <button class="icon" id="ws-toggle" title="Workspace: browser, editor, terminal" aria-label="Workspace">
+      <button class="icon" id="ws-toggle" title="Workspace: browser, editor, output" aria-label="Workspace">
         <svg viewBox="0 0 16 16" width="16" height="16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9.5 3v10" stroke="currentColor" stroke-width="1.5"/></svg>
       </button>
       <button class="icon" id="gear" title="Settings" aria-label="Settings">
@@ -38,11 +39,16 @@
       </button>
     </div>
     <div class="pop" id="pop" hidden>
+      <h5>Model</h5>
       <label>Context window
         <select id="ctx"><option value="16384">16k</option><option value="32768">32k</option><option value="65536">64k</option><option value="131072">128k</option></select>
       </label>
       <label class="row"><input type="checkbox" id="think"><span>Reasoning before answering</span></label>
-      <label class="row"><input type="checkbox" id="review"><span>Review pass after larger changes</span></label>
+      <h5>Behaviour</h5>
+      <label class="row"><input type="checkbox" id="review"><span>Self-check after larger changes</span></label>
+      <label class="row"><input type="checkbox" id="variants"><span>Offer parallel variants (shares GPU and browser)</span></label>
+      <h5>More</h5>
+      <div class="prow"><button id="open-memory" class="row">Memory and notes…</button><button id="open-mcp" class="row">MCP servers…</button></div>
       <button id="theme" class="row">Switch light / dark</button>
     </div>
   </header>
@@ -50,12 +56,8 @@
   <main class="ide" id="ide">
     <section class="panel chat">
       <div class="branchbar" id="branchbar" hidden></div>
-      <button class="outline-btn" id="outline-btn" title="Outline and pinned messages" aria-label="Outline" hidden>
-        <svg viewBox="0 0 16 16" width="15" height="15"><path d="M2 3.5h12M2 8h8M2 12.5h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
-      </button>
-      <div class="outline" id="outline" hidden></div>
+      <div class="tasks" id="tasks" hidden></div>
       <div class="scroll" id="log"></div>
-      <div class="spin" id="spin" hidden><i></i><span id="spin-t"></span><button type="button" class="stopbtn" id="stop" title="Stop the model (Esc)">■ Stop</button></div>
       <div class="slash" id="slash" hidden></div>
       <form id="composer">
         <div class="thumbs" id="thumbs" hidden></div>
@@ -64,10 +66,11 @@
             <svg viewBox="0 0 16 16" width="16" height="16"><path d="M13.5 7.5l-5.2 5.2a3 3 0 0 1-4.3-4.2l5.5-5.5a2 2 0 0 1 2.9 2.8L7 11.3a1 1 0 0 1-1.4-1.4l4.7-4.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
           </button>
           <textarea id="input" rows="1" placeholder="Describe a task, or type / for commands" autofocus></textarea>
+          <label class="planfirst" title="The model investigates and proposes a task board first; nothing runs until you approve it"><input type="checkbox" id="planfirst"><span>Plan first</span></label>
         </div>
         <input type="file" id="file" accept="image/*" multiple hidden>
       </form>
-      <div class="hint"><span id="h-mode"></span><span>⇧⇥ mode</span><span>esc stop</span><span>↵ send</span></div>
+      <div class="hint"><span id="h-mode"></span><span class="keys">Enter sends · Shift+Enter newline · Shift+Tab mode · Esc stop</span></div>
     </section>
 
     <section class="panel work" id="work" hidden>
@@ -105,21 +108,19 @@
         <div class="view" id="v-code"><div class="code" id="code"></div><div class="status" id="cstat"></div></div>
       </div>
       <div class="term" id="term-wrap" hidden>
-        <div class="term-head"><span>Terminal</span><span id="term-run"></span><button class="mini" id="term-clear" title="Clear">Clear</button></div>
+        <div class="term-head"><span>Output</span><span id="term-run"></span><button class="mini" id="term-clear" title="Clear">Clear</button></div>
         <div class="term-body" id="term"></div>
       </div>
     </section>
 
-    <aside class="panel plan" id="plan" hidden></aside>
-
     <aside class="panel side drawer" id="drawer" hidden>
       <nav class="dtabs" id="dtabs" role="tablist" aria-label="Sidebar">
-        <button data-t="files" role="tab">Files <i id="bd-files"></i></button>
         <button data-t="sessions" role="tab">Sessions <i id="bd-sessions"></i></button>
-        <button data-t="memory" role="tab">Memory <i id="bd-memory"></i></button>
-        <button data-t="mcp" role="tab">MCP <i id="bd-mcp"></i></button>
+        <button data-t="files" role="tab">Files <i id="bd-files"></i></button>
+        <button data-t="memory" role="tab" hidden>Memory <i id="bd-memory"></i></button>
+        <button data-t="mcp" role="tab" hidden>MCP <i id="bd-mcp"></i></button>
       </nav>
-      <div class="dpane" id="dp-files">
+      <div class="dpane" id="dp-files" hidden>
         <div class="dhead">
           <div class="proj"><b id="proj-name"></b><span id="proj-path"></span><button class="mini" id="refresh" title="Refresh">↻</button></div>
           <div class="seg" id="fseg"><button data-v="changed">Changed <i id="fc-ch"></i></button><button data-v="all">All files</button></div>
@@ -127,7 +128,7 @@
         </div>
         <div class="dlist tree" id="flist"></div>
       </div>
-      <div class="dpane" id="dp-sessions" hidden>
+      <div class="dpane" id="dp-sessions">
         <div class="dhead">
           <button class="primary" id="new" title="Start a new session">＋ New session</button>
           <input class="dq" id="sq" placeholder="Search sessions…" autocomplete="off">
@@ -136,6 +137,7 @@
       </div>
       <div class="dpane" id="dp-memory" hidden>
         <div class="dhead">
+          <div class="proj"><b>Memory</b><span>notes, snippets, skills, design library</span></div>
           <div class="seg" id="mseg"><button data-v="all">All</button><button data-v="memory">Notes</button><button data-v="snippet">Snippets</button><button data-v="skill">Skills</button><button data-v="library">Library</button></div>
           <div class="row2"><input class="dq" id="mq" placeholder="Search memory…" autocomplete="off"><button class="mini add" id="mem-add" title="Add a note, snippet or skill">＋</button></div>
           <div id="memform" hidden></div>
@@ -151,13 +153,13 @@
 </div>
 <div class="cmp" id="cmp" hidden>
   <div class="cmp-box">
-    <header><b>Compare branches</b><span id="cmp-meta"></span><select id="cmp-sel" aria-label="Compare with"></select><button id="cmp-x" class="mini" aria-label="Close">✕</button></header>
+    <header><b>Compare sessions</b><span id="cmp-meta"></span><select id="cmp-sel" aria-label="Compare with"></select><button id="cmp-x" class="mini" aria-label="Close">✕</button></header>
     <div class="cmp-body" id="cmp-body"></div>
   </div>
 </div>
 <div class="cmp" id="var" hidden>
   <div class="cmp-box small">
-    <header><b>Run variants in parallel</b><span>Each variant works in its own copy of the project.</span><button id="var-x" class="mini" aria-label="Close">✕</button></header>
+    <header><b>Try variants in parallel</b><span>Each variant is its own session with its own copy of the project.</span><button id="var-x" class="mini" aria-label="Close">✕</button></header>
     <div class="var-body" id="var-body"></div>
   </div>
 </div>

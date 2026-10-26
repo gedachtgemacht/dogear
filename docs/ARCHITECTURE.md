@@ -11,7 +11,7 @@ One Python process, one browser tab, one local model. This page follows a reques
 5. **The loop.** `llm.stream()` streams the model's answer from Ollama. Text tokens go to the UI as `token`; a tool call becomes a `tool` event (a card in the chat). Before a tool runs, `_needs_approval()` decides whether the UI has to confirm it (`approval` event, answered with `approve`). The tool runs (`tools.py` and friends), its result goes back to the model as a `tool` message and to the UI as `result`. File changes also emit `changed` with the diff; shell output streams as `term`.
 6. **Guards along the way.** Parameter names the model got wrong are repaired (`fix_args`); tool calls written as text are rescued; a model that announces a call instead of making one is nudged; repeated errors or probe loops without an edit are cut off; the plan gate blocks the first write on large tasks until a `TodoWrite` exists; the step limit is 80, after which the model must report.
 7. **After the last tool call** the final text is the answer. Then, depending on what happened: a review pass (the model checks its result against the request), the quality gate for web files (`audit.py` measures the page in the browser at desktop and phone width, `static_check` reads the source; findings start a fix pass), the copy check for new pages, auto-learning into the library when tests went green, memory suggestions from the helper model, a title for the session.
-8. **`summary`** closes the turn in the UI: steps, seconds, changed files, sources, commands, the checkpoint to undo to. `present.py` adds display blocks (facts, steps, code) without changing the text.
+8. **`summary`** closes the turn in the UI: steps, seconds, changed files, sources, commands, the checkpoint to undo to, and the **receipt**: the tests the harness saw run (`RunTests` meta), the page it measured (audit before and after the fix pass), console errors it caught, and a status it computed (`verified`, `unverified`, `stopped`, `done`). A stopped or aborted run gets its summary too, so the UI never looks as if it were still running.
 
 ## The plan flow
 
@@ -66,9 +66,15 @@ data/
 
 ## The front end
 
-Plain HTML, CSS and six classic scripts that share top-level state through the global lexical scope (load order: `core`, `sidebar`, `chat`, `workspace`, `board`, `app`). No bundler, no framework. `core.js` holds helpers, syntax highlighting, the Markdown renderer and the state object `S`; `chat.js` renders turns, tool cards, summaries and the approval and plan cards; `workspace.js` is the editor, the live browser canvas and the terminal; `board.js` is the kanban, variants, outline, branches and the word diff; `sidebar.js` is the tabbed drawer; `app.js` handles the WebSocket events, the composer, slash commands and boot. Theme and a few view preferences live in `localStorage`.
+Plain HTML, CSS and six classic scripts that share top-level state through the global lexical scope (load order: `core`, `sidebar`, `chat`, `workspace`, `board`, `app`). No bundler, no framework. `core.js` holds helpers, syntax highlighting, the Markdown renderer and the state object `S`; `chat.js` renders a turn as user message, status block, folded step list, answer and leftovers (changed files, sources), plus the approval and plan cards; `workspace.js` is the editor, the live browser canvas and the output panel; `board.js` is the task strip, sessions based on other sessions and the optional variants; `sidebar.js` is the drawer (sessions, files; memory and MCP from the settings); `app.js` maps every WebSocket event to one handler (`ON`), and holds the composer, slash commands and boot.
+
+The rule for the chat: the process is folded, the answer is rendered once. While a run works, the status block shows the current step and the last three steps; a question for the user replaces the status head and changes the window title; nothing opens a panel by itself, the status block offers links instead.
 
 The design is deliberately quiet: one accent colour, no decoration, one signature (the cut corner of every panel).
+
+## Kept but not offered
+
+`ultra.py` (multi-agent runs), `present.py` (answer re-rendering), the snippet-learning loop (`rate`, auto-learning, `SaveSnippet`/`SaveSkill`/`Forget`) and the generic skills in `skills/extra/` are still in the repository but hidden from the model and the UI (`CUT_TOOLS` in `agent.py`). They added surface that local models rarely used well.
 
 ## Adding a tool
 

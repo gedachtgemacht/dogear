@@ -12,18 +12,18 @@ dogear talks to a local model through [Ollama](https://ollama.com), gives it the
 
 - **Claude Code style tools.** `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `LS`, `Bash` (with background processes), `RunTests`, `Git`, `Outline`, `FindSymbol`, `WebSearch`, `WebFetch`, `TodoWrite`, `Task` (sub-agent), `AskUser` (multiple-choice forms) and more. Names and shapes follow the Claude Code conventions, so models that learned them use them well.
 - **A browser you both control.** Headless Chrome with its own profile, driven over the DevTools protocol by a small built-in client. The agent navigates, reads the page as element refs, clicks and types; you watch the screencast in the UI and can take over at any time. CAPTCHAs and logins are never bypassed: the agent hands over to you.
-- **Live workspace.** New files are typed in line by line, edits are shown as diffs with the changed lines flashed, shell output streams into a terminal panel, and a preview server serves the project on a separate origin.
-- **Permission modes.** Review (confirm every edit and command), Edits (edit freely, confirm commands), Auto (never ask), Plan (read-only: the model investigates and proposes a task board).
-- **Plan flow.** You approve, edit or reject the board. Then the harness hands the model one task per turn; the model closes each task with a one-line summary or asks for a new plan when something does not fit. Every task is logged (summary, steps, seconds) and the review pass and quality gate run once, after the last task.
+- **One status block per turn.** Working (with the current step and a Stop button), Waiting for you (the permission question or the model's form, right there), Checking the result, Done or Stopped. The steps underneath stay folded; the answer is rendered once and never re-laid out.
+- **The receipt.** When a run ends, the harness reports what it knows itself: the tests it saw run, the page it measured (before and after the fix pass), console errors it caught, and a status it computed, not the model: Verified, Unverified, Stopped.
+- **Live workspace, on demand.** Open it when the status block offers something to look at ("Open index.html", "Watch the browser"); nothing opens on its own. New files are typed in line by line, edits are shown as diffs, shell output streams into the Output panel, a preview server serves the project on a separate origin.
+- **Three modes, named by what they ask.** Ask all (every edit and command), Ask commands (edits run, commands ask), Don't ask.
+- **Plan first.** A toggle on the composer: the model investigates with read-only tools and proposes a task board. You edit, approve or reject it. Then the harness hands the model one task per turn; the model closes each task with a one-line summary or asks for a new plan when something does not fit. Every task is logged on the plan card, the task strip above the chat shows where the run is, and the self-check and quality gate run once, after the last task.
 - **Undo.** Every run starts with a shadow checkpoint of the project (a git commit under `refs/dogear/...`, never touching your branches). One click puts the files back.
-- **Branches and parallel variants.** Branch a conversation from any turn, edit an earlier message and re-run, or start two to four variants in parallel, each in its own git worktree. Compare answers side by side, adopt the files of the one you like.
-- **Plan board.** A kanban (to do / doing / done) that the agent keeps current and that you can edit and drag; the model sees your changes.
+- **Edit and retry.** Hover a message, edit it and send it again as a new session based on this one; compare the two side by side, keep the files of the one you like. Parallel variants (two to four sessions in their own git worktrees) can be switched on in the settings.
 - **Quality gate for web work.** After changes to HTML/CSS/JS the harness measures the page itself (overflow, contrast, holes in grids, empty boxes, tiny targets, placeholder images, generated-UI tells) at desktop and phone width and starts a fix pass when it finds something. Optionally a copy check proofreads the visible text against the brief.
-- **Memory and a library.** Notes, snippets and skills the agent learns are saved per project (`<project>/.dogear/`) or globally. Runs you rate as good teach a snippet library with embeddings that later plans draw from.
+- **Memory.** Notes the agent keeps (decisions, gotchas, commands, preferences) per project (`<project>/.dogear/`) or globally, and a library of 300 solved design briefs with embeddings that the plan phase draws on for web work.
 - **Skills.** Markdown skill files with triggers (`skills/*.md`, plus `<project>/.dogear/skills/`) are loaded into the prompt when the task matches: web design, debugging, testing, code review, API design, security review and more.
 - **MCP.** Connect any MCP server over stdio or Streamable HTTP; its tools appear to the model as `mcp__<server>__<tool>`.
 - **Model profiles.** Every model is recognised the first time it is used (size, MoE, tools, vision, reasoning) and gets a toolbox and prompt style that fits it. Small models get a lean toolbox and rescue logic for tool calls they write as text.
-- **Ultra.** A deterministic multi-agent orchestrator for large reviews, research, design comparisons and audits: finders, adversarial verifiers, synthesis. Lives in the UI as a live tree.
 - **Context care.** `/compact` condenses the conversation into a briefing; it happens automatically when the context window is 70 % full. Images can be attached, pasted or dropped.
 
 <p align="center">
@@ -43,7 +43,7 @@ uv run python -m dogear --open   # http://127.0.0.1:7870
 
 `./start.sh` does the same. `uv run python -m dogear --help` lists the options (`--port`, `--root`, `--reload`).
 
-Point the project field in the header at a directory, pick a mode, describe a task. Type `/` in the composer for commands (`/plan`, `/compact`, `/ultra`, `/remember`, `/init` …). Shift+Tab cycles the mode, Esc stops a run.
+Point the project field in the header at a directory, pick a mode, describe a task. Type `/` in the composer for commands (`/plan`, `/compact`, `/remember`, `/init` …). Shift+Tab cycles the mode, Esc stops a run.
 
 To start dogear at login and get a launcher in the application menu (Linux with systemd):
 
@@ -59,7 +59,7 @@ dogear works with every Ollama model that supports tool calls. On a laptop with 
 |---|---|---|
 | main | `qwen3.6:35b-a3b` | 7/7 on the benchmark at ~70 tokens/s |
 | helper (titles, suggestions, fast sub-agents) | `qwen3.5:4b` | small and quick; chosen automatically as the smallest installed tool model |
-| embeddings (library) | `qwen3-embedding:0.6b` | optional; without it the library falls back to keyword search |
+| embeddings (design library) | `qwen3-embedding:0.6b` | optional; without it the library falls back to keyword search |
 
 Models with vision get screenshots; models without are told they cannot see the attached image. `scripts/calibrate.py MODEL` measures which toolbox size a new model handles best and records it.
 
@@ -100,11 +100,11 @@ dogear/          the Python package
   audit.py       the measured visual audit and the static source checks
   copycheck.py   proofreading of page copy against the brief
   present.py     turns a finished answer into display blocks
-  ultra.py       the multi-agent orchestrator
+  ultra.py       a multi-agent orchestrator (kept, not offered to the model)
   mcp.py         MCP client, stdio and Streamable HTTP
   llm.py         streaming client for Ollama
 web/             the UI: index.html, style.css and six plain scripts (core, sidebar, chat, workspace, board, app)
-skills/          built-in skills
+skills/          built-in skills (skills/extra: more, not loaded by default)
 scripts/         benchmark, calibration, design benchmark, screenshots, run a task from the shell
 tests/           pytest entry (test_checks.py), the check scripts, live end-to-end scripts, fixtures
 data/            runtime state (sessions, images, Chrome profile, library, learned skills); not in git

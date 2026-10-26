@@ -1,17 +1,14 @@
 // dogear UI, part 4: the on-demand workspace. Editor with live typing and edit diffs, the shared live browser, the terminal.
 /* ============================================================ workspace: only open when needed */
-function openWS(tab, auto = false) {
-  if (auto && S.wsDismissed) return false;
-  const first = $("#work").hidden;
+function openWS(tab) {
   $("#work").hidden = false; $("#ide").classList.add("ws"); $("#ws-toggle").classList.add("on");
-  if (first) S.wsAuto = auto;
-  if (tab) activate(tab);
+  S.follow = true;
+  if (tab) activate(tab, false);
   fit();
   return true;
 }
-function closeWS(user = false) {
+function closeWS() {
   $("#work").hidden = true; $("#ide").classList.remove("ws"); $("#ws-toggle").classList.remove("on");
-  if (user) S.wsDismissed = true;
 }
 const wsOpen = () => !$("#work").hidden;
 function drawer(open) { $("#drawer").hidden = !open; if (open) renderPane(); $("#menu").classList.toggle("on", open); }
@@ -26,13 +23,13 @@ function renderTabs() {
     const b = el("button", `tab ${t === E.active ? "on" : ""}`); b.dataset.p = t;
     if (t === "@preview") { const i = el("i", "live"); b.append(i, "Browser"); }
     else { b.append(t.split("/").pop()); if (badge(t)) b.append(el("span", "dot")); const x = el("span", "x", "✕"); x.onclick = e => { e.stopPropagation(); closeTab(t); }; b.append(x); b.title = t; }
-    b.onclick = () => activate(t); nav.append(b);
+    b.onclick = () => activate(t, true); nav.append(b);
   }
-  const f = el("label", "tab follow");
-  const cb = el("input"); cb.type = "checkbox"; cb.checked = S.follow; cb.onchange = () => S.follow = cb.checked; f.append(cb, "Follow agent"); nav.append(f);
-  const x = el("button", "tab close", "✕"); x.title = "Close workspace"; x.onclick = () => closeWS(true); nav.append(x);
+  if (!S.follow) { const f = el("button", "tab follow", "Follow the agent"); f.title = "Show again what the agent opens and changes"; f.onclick = () => { S.follow = true; renderTabs(); }; nav.append(f); }
+  const x = el("button", "tab close", "✕"); x.title = "Close workspace"; x.onclick = () => closeWS(); nav.append(x);
 }
-function activate(t) {
+function activate(t, byUser = true) {
+  if (byUser && wsOpen() && t !== E.active) S.follow = false;   // the user looks at something: stop switching tabs under them
   E.active = t; if (!E.tabs.includes(t)) E.tabs.push(t);
   $("#v-preview").classList.toggle("on", t === "@preview"); $("#v-code").classList.toggle("on", t !== "@preview");
   renderTabs(); document.querySelectorAll("#tree .n").forEach(n => n.classList.toggle("sel", n.dataset.p === t));
@@ -136,7 +133,7 @@ function browserEvent(m) {
         if (few) d.append(el("b", "", r.ref)); bov.append(d); setTimeout(() => d.remove(), 1500); } break; }
     case "b_log": logLine(m.level, m.text); break;
     case "b_handoff": $("#need-t").textContent = m.reason; $("#need").hidden = false; document.title = "● Your turn";
-      S.wsDismissed = false; openWS("@preview"); bov.focus(); break;
+      openWS("@preview"); bov.focus(); break;
     case "b_handoff_done": $("#need").hidden = true; document.title = S.st?.name || "dogear"; break;
   }
 }

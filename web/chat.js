@@ -1,7 +1,8 @@
-// dogear UI, part 3: the conversation. Turns, tool cards, summaries, answer blocks, approvals, rating, plan card, memory UI.
-/* ============================================================ chat */
-function keepScroll() { const near = log.scrollHeight - log.scrollTop - log.clientHeight < 160; return () => { if (near) log.scrollTop = log.scrollHeight; }; }
-/* The empty session: what this is, where it works, a few starting points and the sessions you had. */
+// dogear UI, part 3: the conversation.
+// A turn is: the user's message, one status block (working / waiting for you / checking / done / stopped),
+// the step list (folded), the answer, and what the run left behind (changed files, sources).
+
+/* ============================================================ empty session */
 const STARTERS = [
   ["Build something", "Build a small Pomodoro timer as a single index.html with start, pause and reset. Keep it clean and readable, then open it in the browser and check the console."],
   ["Explain this project", "Explore this project and explain how it is organised: entry points, main modules, how to run and test it. Do not change anything."],
@@ -12,80 +13,159 @@ function emptyState() {
   log.innerHTML = "";
   const e = el("div", "empty-state");
   const head = el("div", "es-head");
-  head.append(el("b", "", "Describe a task to get started"), el("small", "", S.root || ""));
+  head.append(el("b", "", baseName(S.root) || "Describe a task to get started"), el("small", "", MODE_TXT[S.mode] || ""));
   e.append(head);
-  const tips = el("div", "es-tips");
-  [["Review", "confirms every edit and command"], ["Edits", "writes files, confirms commands"], ["Auto", "never asks"], ["Plan", "proposes a board first"]]
-    .forEach(([k, v]) => { const r = el("span"); r.append(el("b", "", k), " " + v); tips.append(r); });
-  e.append(tips);
   const chips = el("div", "es-starters");
-  STARTERS.forEach(([label, prompt]) => { const c = el("button", "es-chip", label); c.type = "button"; c.title = prompt;
-    c.onclick = () => { const i = $("#input"); i.value = prompt; i.dispatchEvent(new Event("input")); i.focus(); }; chips.append(c); });
+  STARTERS.forEach(([label, prompt]) => {
+    const c = el("button", "es-chip", label); c.type = "button"; c.title = prompt;
+    c.onclick = () => { const i = $("#input"); i.value = prompt; i.dispatchEvent(new Event("input")); i.focus(); };
+    chips.append(c);
+  });
   e.append(chips);
   const recent = (S.st?.sessions || []).filter(x => x.id !== S.sid && x.turns > 0).slice(0, 5);
   if (recent.length) {
     const box = el("div", "es-recent"); box.append(el("h5", "", "Recent sessions"));
-    recent.forEach(x => { const r = el("button", "es-row"); r.type = "button";
+    recent.forEach(x => {
+      const r = el("button", "es-row"); r.type = "button";
       r.append(el("span", "t", x.title), el("span", "m", `${plural(x.turns, "turn")} · ${ago(x.updated)} · ${baseName(x.root)}`));
-      r.onclick = () => !S.busy && sendWS({ type: "open", id: x.id }); box.append(r); });
+      r.onclick = () => !S.busy && sendWS({ type: "open", id: x.id });
+      box.append(r);
+    });
     e.append(box);
   }
-  e.append(el("div", "es-keys", "Enter sends · Shift+Enter newline · Shift+Tab cycles the mode · Esc stops · / lists commands"));
   log.append(e);
 }
 const clearEmpty = () => $(".empty-state", log)?.remove();
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const mmss = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
-/* ---- turns: one user message, its work (process) and the answer (focus) */
+/* ============================================================ turns */
 function newTurn(text, imgs = [], mode = S.mode, task = null) {
   clearEmpty();
-  const t = { el: el("div", "turn"), work: el("div", "work"), answer: el("div", "answer"), after: el("div", "after"), sum: null, raw: "", pres: null, code: [],
-              i: S.turns.length, text, mode, task };
+  const t = {
+    el: el("div", "turn"), status: el("div", "status"), work: el("div", "steps live"), answer: el("div", "answer"), after: el("div", "after"),
+    i: S.turns.length, text, mode, task, raw: "", nsteps: 0, t0: Date.now(), links: new Map(),
+    st: { state: "idle" },               // the status block's state; see paintStatus
+  };
   const u = el("div", "u"), i = el("div", "in");
-  if (task) i.append(el("span", "tbadge", `Task ${task.i + 1}/${task.n}`));   // a turn the harness started while carrying out a plan
+  if (task) i.append(el("span", "tbadge", `Task ${task.i + 1}/${task.n}`));
   i.append(el("span", "", text));
-  if (imgs.length) { const g = el("div", "imgs"); imgs.forEach(src => { const im = el("img"); im.src = src; im.onclick = () => window.open(src, "_blank"); g.append(im); }); i.append(g); }
+  if (imgs.length) {
+    const g = el("div", "imgs");
+    imgs.forEach(src => { const im = el("img"); im.src = src; im.onclick = () => window.open(src, "_blank"); g.append(im); });
+    i.append(g);
+  }
   u.append(i);
-  t.work.hidden = true; t.el.append(u, t.work, t.answer, t.after); log.append(t.el);
-  const bar = el("div", "tact"), btn = (txt, title, fn) => { const b = el("button", "", txt); b.title = title; b.type = "button"; b.onclick = e => { e.stopPropagation(); fn(b); }; bar.append(b); return b; };
-  t.pinBtn = btn("★", "Pin this turn", b => { const on = !S.meta.pins.includes(t.i); sendWS({ type: "pin", turn: t.i, on }); });
-  btn("⑂", "Branch from here (keep this turn and everything before)", () => !S.busy && sendWS({ type: "fork", turn: t.i, where: "after" }));
-  btn("✎", "Edit this message and branch before it", () => !S.busy && sendWS({ type: "fork", turn: t.i, where: "before" }));
-  btn("⑂⑂", "Run variants of this turn in parallel (own copy of the project each)", () => !S.busy && openVariants(t));
+  t.status.hidden = true;
+  t.el.append(u, t.status, t.work, t.answer, t.after);
+  log.append(t.el);
+  // actions on hover: retry with an edited message; variants are optional (settings)
+  const bar = el("div", "tact");
+  const btn = (txt, title, fn) => { const b = el("button", "", txt); b.title = title; b.type = "button"; b.onclick = e => { e.stopPropagation(); fn(b); }; bar.append(b); return b; };
+  btn("Edit & retry", "Branch here: edit this message and send it again (the original session stays)", () => !S.busy && sendWS({ type: "fork", turn: t.i, where: "before" }));
+  if (S.variants) btn("Variants…", "Run two to four variants of this message in parallel, each in its own copy of the project", () => !S.busy && openVariants(t));
   t.el.append(bar); t.bar = bar;
-  S.turns.push(t); S.turn = t; syncPin(t); renderOutline(); return t;
+  S.turns.push(t); S.turn = t;
+  return t;
 }
 const turn = () => S.turn || newTurn("");
-const workAdd = node => { const w = turn().work; w.hidden = false; w.append(node); };
-const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
+/* ---- the step list: tool cards and the model's narration, folded while it runs and after it ends */
+function workAdd(node) {
+  const t = turn(), w = t.work;
+  w.append(node);
+  if (node.classList.contains("tc")) t.nsteps++;
+  foldSteps(t);
+}
+function foldSteps(t) {
+  const kids = [...t.work.children];
+  kids.forEach((k, i) => k.classList.toggle("old", i < kids.length - 3));
+  paintStatus(t, true);
+}
+function noticeLine(t, text) { const n = el("div", "note", text); t.work.append(n); foldSteps(t); }
+
+/* ---- status block: the one place that says what is going on */
+function setStatus(t, state, extra = {}) {
+  t.st = { ...t.st, ...extra, state };
+  t.status.hidden = false;
+  paintStatus(t);
+}
+function paintStatus(t, light = false) {
+  const st = t.st, box = t.status;
+  if (st.state === "idle") return;
+  if (light && box._state === st.state && box._n === t.nsteps && !st.current) return;
+  box._state = st.state; box._n = t.nsteps;
+  box.className = "status " + st.state;
+  box.innerHTML = "";
+  const head = el("div", "sh");
+  const dot = el("i");
+  const secs = st.secs ?? Math.round((Date.now() - t.t0) / 1000);
+  const label = el("span", "sl"), meta = el("span", "sm"), cur = el("span", "sc");
+  const stepsWord = t.nsteps ? plural(t.nsteps, "step") : "";
+  if (st.state === "working") { label.textContent = "Working"; meta.textContent = [stepsWord, mmss(secs)].filter(Boolean).join(" · "); cur.textContent = st.current || ""; }
+  if (st.state === "checking") { label.textContent = "Checking the result"; meta.textContent = [stepsWord, mmss(secs)].filter(Boolean).join(" · "); cur.textContent = st.current || ""; }
+  if (st.state === "waiting") { label.textContent = "Waiting for you"; meta.textContent = st.what || ""; }
+  if (st.state === "done") { label.textContent = RECEIPT_WORD[st.receipt?.status] || "Done"; meta.textContent = [stepsWord, st.secs != null ? mmss(st.secs) : ""].filter(Boolean).join(" · "); }
+  if (st.state === "stopped") { label.textContent = "Stopped"; meta.textContent = [stepsWord, st.secs != null ? mmss(st.secs) : "", st.reason || ""].filter(Boolean).join(" · "); }
+  head.append(dot, label, meta, cur);
+  if ((st.state === "working" || st.state === "checking") && t === S.turn && S.busy) {
+    const stop = el("button", "stopbtn", "Stop"); stop.type = "button"; stop.title = "Stop the model (Esc)"; stop.onclick = stopRun; head.append(stop);
+  }
+  box.append(head);
+  if (st.state === "waiting" && st.box) box.append(st.box);
+  if (st.state === "done" && st.receipt) box.append(receiptEl(st.receipt));
+  // what there is to look at, and the steps
+  const row = el("div", "srow");
+  for (const [key, l] of t.links) { const a = el("button", "slink" + (l.fresh ? " fresh" : ""), l.label); a.type = "button"; a.onclick = () => { l.fresh = false; a.classList.remove("fresh"); l.go(); }; row.append(a); }
+  if (t.nsteps) {
+    const all = t.work.classList.contains("all"), live = st.state === "working" || st.state === "checking" || st.state === "waiting";
+    const tg = el("button", "slink steps", all ? "Hide steps" : (live && t.nsteps > 3 ? `Show all ${t.nsteps} steps` : live ? "" : `Show ${plural(t.nsteps, "step")}`));
+    tg.type = "button";
+    if (tg.textContent) { tg.onclick = () => { t.work.classList.toggle("all"); paintStatus(t); }; row.append(tg); }
+  }
+  if (row.children.length) box.append(row);
+  t.work.classList.toggle("live", st.state === "working" || st.state === "checking" || st.state === "waiting");
+}
+const RECEIPT_WORD = { verified: "Verified", unverified: "Unverified", stopped: "Stopped", done: "Done" };
+function receiptEl(r) {
+  const box = el("div", "receipt");
+  const row = (k, v, tone) => { const d = el("div", "rr" + (tone ? " " + tone : "")); d.append(el("span", "rk", k), el("span", "rv", v)); box.append(d); };
+  if (r.tests) {
+    const ok = r.tests.passed && !r.tests.failed && !r.tests.errors && !r.tests.exit;
+    row("Tests", `${r.tests.passed} passed` + (r.tests.failed ? `, ${r.tests.failed} failed` : "") + (r.tests.errors ? `, ${r.tests.errors} errors` : ""), ok ? "ok" : "bad");
+  }
+  if (r.page) {
+    const cnt = x => x ? x.high + x.medium + x.source + x.copy : 0;
+    const before = cnt(r.page.before), after = r.page.after ? cnt(r.page.after) : null;
+    const txt = after == null ? (before ? `${plural(before, "finding")} measured` : "audit clean") : `${before} → ${after} after the fix pass`;
+    row("Page", `${r.page.name}: ${txt}`, (after ?? before) ? "bad" : "ok");
+  }
+  if (r.console) row("Console", r.console.errors ? plural(r.console.errors, "error") : "no errors", r.console.errors ? "bad" : "ok");
+  if (r.status === "unverified" && !r.tests && !r.page) row("Checked", "nothing: no tests were run and no page was measured", "warn");
+  if (r.status === "stopped") row("Reason", r.reason || "", "warn");
+  return box;
+}
+function addLink(t, key, label, go) { t.links.set(key, { label, go, fresh: true }); paintStatus(t); }
+
+/* ---- the run ended: summary line, receipt, changed files, sources */
 function applySummary(t, sm) {
-  const parts = [];
-  if (sm.steps) parts.push(plural(sm.steps, "step"));
-  if (sm.changes?.length) parts.push(plural(sm.changes.length, "file") + " changed");
-  const failed = (sm.commands || []).filter(c => c.exit).length;
-  if (sm.commands?.length) parts.push(plural(sm.commands.length, "command") + (failed ? ` (${failed} failed)` : ""));
-  const pages = (sm.sources || []).filter(x => x.kind === "visited").length;
-  if (pages) parts.push(plural(pages, "page"));
-  if (sm.secs) parts.push(sm.secs + "s");
-  t.sum?.remove(); t.sum = null;
-  if (sm.steps) {
-    const h = el("div", "wsum", parts.join(" · "));
-    h.onclick = () => { t.work.hidden = !t.work.hidden; h.classList.toggle("open", !t.work.hidden); };
-    t.el.insertBefore(h, t.answer); t.sum = h; t.work.hidden = true;
-  }
-  t.after.querySelectorAll(".undo").forEach(n => n.remove());
-  if (sm.checkpoint?.before) {
-    const u = el("button", "undo", "Undo this run"); let armed = false;
-    u.onclick = () => { if (!armed) { armed = true; u.textContent = "Click again to restore the files"; setTimeout(() => { armed = false; u.textContent = "Undo this run"; }, 4000); return; }
-      sendWS({ type: "undo", root: sm.checkpoint.root, to: sm.checkpoint.before }); u.remove(); };
-    t.after.append(u);
-  }
-  t.after.querySelectorAll(".rate").forEach(n => n.remove());
-  if (sm.steps && !(S.mode === "plan" && !sm.changes?.length)) rateBar(t, sm.rating);
-  // deterministic context cards: what changed, where it came from
+  const stopped = sm.receipt?.status === "stopped";
+  t.nsteps = sm.steps || t.nsteps;
+  setStatus(t, stopped ? "stopped" : "done", { secs: sm.secs, receipt: sm.receipt, reason: stopped ? sm.receipt.reason : "" });
+  t.work.classList.remove("live", "all");
   t.after.querySelectorAll(".changes, .sources").forEach(n => n.remove());
   if (sm.changes?.length) {
-    const box = el("div", "changes");
+    const box = el("div", "changes"), head = el("div", "chead");
+    head.append(el("span", "", `${plural(sm.changes.length, "file")} changed`));
+    if (sm.checkpoint?.before) {
+      const u = el("button", "undo", "Undo this run"); let armed = false;
+      u.onclick = () => {
+        if (!armed) { armed = true; u.textContent = "Click again to restore the files"; setTimeout(() => { armed = false; u.textContent = "Undo this run"; }, 4000); return; }
+        sendWS({ type: "undo", root: sm.checkpoint.root, to: sm.checkpoint.before }); u.remove();
+      };
+      head.append(u);
+    }
+    box.append(head);
     for (const c of sm.changes) {
       const r = el("div", "chg"); r.append(el("b", c.created ? "A" : "M", c.created ? "A" : "M"), el("span", "", rel(c.path)), el("em", "", `+${c.added} −${c.removed}`));
       r.onclick = () => openWS(rel(c.path)); box.append(r);
@@ -103,65 +183,20 @@ function applySummary(t, sm) {
     t.after.append(box);
   }
 }
-
-const KIND_LABEL = { fact: "Answer", "how-to": "How-to", "code-change": "Change", debugging: "Diagnosis", comparison: "Comparison", explanation: "Explanation", status: "Status" };
-function renderBlocks(t, p) {
-  const box = t.answer; box.innerHTML = ""; t.pres = p;
-  if (KIND_LABEL[p.kind]) box.append(el("div", "kind", KIND_LABEL[p.kind]));
-  if (p.headline) { const h = el("h3", "head"); h.innerHTML = md(p.headline).replace(/\n/g, " "); box.append(h); }
-  for (const b of p.blocks) {
-    const w = el("div", `blk ${b.type}${b.tone ? " " + b.tone : ""}`);
-    if (b.title && b.type !== "callout") w.append(el("div", "btitle", b.title));
-    if (b.type === "prose" || b.type === "callout") { const m = el("div", "md"); m.innerHTML = md(b.text); w.append(m); }
-    else if (b.type === "defs") {
-      const d = el("dl", "defs");
-      for (const x of b.pairs) { const dd = el("dd"); dd.innerHTML = md(x.value); d.append(el("dt", "", x.label), dd); }
-      w.append(d);
-    }
-    else if (b.type === "facts") { const d = el("dl", "facts"); for (const x of b.pairs) { const dd = el("dd"); dd.innerHTML = md(x.value); d.append(el("dt", "", x.label), dd); } w.append(d); }
-    else if (b.type === "steps" || b.type === "list") {
-      const l = el(b.type === "steps" ? "ol" : "ul", b.type); b.items.forEach(i => { const li = el("li"); li.innerHTML = md(i); l.append(li); }); w.append(l);
-    } else if (b.type === "table") {
-      const tb = el("table", "tbl"), h = el("tr"); const cell = (tag, c) => { const e = el(tag); e.innerHTML = md(c); return e; };
-      b.columns.forEach(c => h.append(cell("th", c))); tb.append(h);
-      b.rows.forEach(r => { const tr = el("tr"); r.forEach(c => tr.append(cell("td", c))); tb.append(tr); }); w.append(tb);
-    } else if (b.type === "code") {
-      const c = p.code[b.ref - 1]; if (!c) continue;
-      const pre = el("pre"), code = el("code"); code.innerHTML = highlight(c.code, EXT[c.lang.toLowerCase()] || "md").join("\n"); pre.append(code);
-      const cp = el("button", "copy", "Copy"); cp.onclick = () => navigator.clipboard?.writeText(c.code).then(() => { cp.textContent = "Copied"; setTimeout(() => cp.textContent = "Copy", 1200); });
-      const sv = el("button", "copy", "Save snippet"); sv.onclick = () => snippetForm(sv, c);
-      w.append(pre, cp, sv);
-    }
-    box.append(w);
-  }
-  t.after.querySelectorAll(".follow-ups, .rawtoggle").forEach(n => n.remove());
-  if (p.followups?.length) {
-    const f = el("div", "follow-ups"); f.append(el("span", "lbl", "Next"));
-    for (const x of p.followups) { const c = el("button", "fu", x); c.onclick = () => { $("#input").value = x; $("#input").focus(); }; f.append(c); }
-    t.after.append(f);
-  }
-  if (t.mode === "plan") {
-    const items = p.blocks.filter(b => b.type === "steps" || b.type === "list").flatMap(b => b.items).slice(0, 20);
-    if (items.length >= 2) {
-      const u = el("button", "useplan", "Use as plan and switch to Edits");
-      u.onclick = () => { sendWS({ type: "set_todos", items: items.map(x => ({ content: x.replace(/\*\*/g, "").slice(0, 200), status: "pending" })) });
-        setMode("edit"); $("#input").value = "Carry out the plan, step by step, and keep the task list current."; $("#input").focus(); u.remove(); };
-      t.after.append(u);
-    }
-  }
-  const rt = el("button", "rawtoggle", "Show original");
-  rt.onclick = () => { const raw = rt.dataset.on === "1";
-    if (raw) { renderBlocks(t, t.pres); return; }
-    box.innerHTML = ""; const m = el("div", "md"); m.innerHTML = md(t.raw); box.append(m); rt.textContent = "Show formatted"; rt.dataset.on = "1"; };
-  t.after.append(rt);
-}
 function setAnswerText(t, text) { t.raw = text; t.answer.innerHTML = ""; const m = el("div", "md"); m.innerHTML = md(text); t.answer.append(m); }
 
-function diffEl(diff, max = 16) {
+/* ============================================================ tool cards */
+function diffEl(diff, max = 12, context = 2) {
   const box = el("div", "diff"); let n = 0; const hidden = [];
   diff.hunks.forEach((h, hi) => {
     if (hi) box.append(el("div", "gap", "⋯"));
-    h.forEach(([sg, ln, tx]) => {
+    // keep `context` unchanged lines around every change; the rest is noise
+    const keep = new Set();
+    h.forEach(([sg], i) => { if (sg !== " ") for (let k = i - context; k <= i + context; k++) keep.add(k); });
+    let skipped = 0;
+    h.forEach(([sg, ln, tx], i) => {
+      if (!keep.has(i) && h.some(([s]) => s !== " ")) { skipped++; return; }
+      if (skipped) { box.append(el("div", "gap", "⋯")); skipped = 0; }
       const row = el("div", `dl ${sg === "+" ? "add" : sg === "-" ? "del" : ""}`);
       row.append(el("span", "ln", ln ?? ""), el("span", "sg", sg === " " ? "" : sg), el("span", "", tx));
       if (n++ >= max) { row.hidden = true; hidden.push(row); }
@@ -174,61 +209,62 @@ function diffEl(diff, max = 16) {
 
 function toolCard(id, name, args, label) {
   clearEmpty();
-  const mcp = name.startsWith("mcp__"), kind = mcp ? "mcp" : (KIND[name] || "read");
-  const shown = mcp ? name.split("__").slice(1).join(" · ") : name.startsWith("browser_") ? "browser · " + name.slice(8) : name;
+  const mcp = name.startsWith("mcp__"), kind = name === "TodoWrite" ? "todo" : mcp ? "mcp" : (KIND[name] || "read");
+  const shown = mcp ? name.split("__").slice(1).join(" · ") : name.startsWith("browser_") ? "Browser " + name.slice(8) : name;
   const card = el("div", `tc k-${kind} run`), th = el("div", "th"), tr = el("div", "tr"), tb = el("div", "tb");
-  th.append(el("i"), el("b", "", shown), el("span", "arg", label ? `(${label.split(S.root + "/").join("")})` : ""));
+  th.append(el("i"), el("b", "", shown), el("span", "arg", label ? label.split(S.root + "/").join("") : ""));
   tr.append(el("span", "sum", "…"), el("em", "", "")); tr.hidden = true;
   card.append(th, tr, tb); workAdd(card);
-  tr.onclick = () => card.classList.toggle("open");
+  th.onclick = tr.onclick = () => { if (tb.children.length) card.classList.toggle("open"); };
   return (S.cards[id] = { card, tr, tb, name, args });
 }
 
 function summarize(name, ok, text, meta) {
   const first = (text.split("\n").find(l => l.trim()) || "").slice(0, 110);
+  if (first.startsWith("[old result truncated")) return "(result dropped from the context)";
   if (!ok) return first.replace(/^Error: /, "");
   switch (name) {
     case "Read": return `Read ${meta.lines ?? "?"} lines`;
     case "LS": return `Listed ${meta.entries ?? "?"} entries`;
     case "Glob": return `Found ${meta.files ?? 0} files`;
     case "Grep": return `${meta.matches ?? 0} matches`;
-    case "Write": return meta.created ? `Created file, ${meta.diff.added} lines` : `Overwrote file (+${meta.diff.added} −${meta.diff.removed})`;
-    case "Edit": case "MultiEdit": return `Updated: +${meta.diff?.added ?? 0} −${meta.diff?.removed ?? 0}`;
+    case "Write": return meta.created ? `Created, ${meta.diff.added} lines` : `Overwrote (+${meta.diff.added} −${meta.diff.removed})`;
+    case "Edit": case "MultiEdit": return `+${meta.diff?.added ?? 0} −${meta.diff?.removed ?? 0}`;
     case "Bash": return (first || "(no output)") + (meta.exit ? `  · exit ${meta.exit}` : "");
     case "TodoWrite": return `${meta.done}/${meta.total} tasks done`;
     case "WebFetch": return `Fetched · HTTP ${meta.status}`;
+    case "browser_screenshot": return "Screenshot taken";
+    case "complete_current_task": return "Task closed";
+    case "request_replan": return "Asked for a new plan";
     default: return first || "done";
   }
 }
 
 function finishCard(c, ok, text, meta = {}) {
-  c.card.classList.remove("run"); if (!ok) c.card.classList.add("bad");
+  c.card.classList.remove("run", "wait"); if (!ok) c.card.classList.add("bad");
   c.tr.hidden = false; c.tr.firstChild.textContent = summarize(c.name, ok, text, meta);
   const lines = text.split("\n").length;
-  if (lines > 2 && !["Write", "Edit", "TodoWrite"].includes(c.name)) c.tr.lastChild.textContent = `+${lines - 1} lines`;
-  if (meta.diff && ok) c.tb.append(diffEl(meta.diff)), c.tb.classList.add("show");
-  else if (c.name !== "TodoWrite") { c.tb.append(el("pre", "", text.slice(0, 5000))); if (!ok) c.card.classList.add("open"); }
+  if (meta.diff && ok) { c.tb.append(diffEl(meta.diff)); c.tr.lastChild.textContent = "diff"; }
+  else if (c.name !== "TodoWrite" && (lines > 1 || text.length > 110)) { c.tb.append(el("pre", "", text.slice(0, 5000))); c.tr.lastChild.textContent = `${lines} lines`; }
+  const t = S.turn; if (t) paintStatus(t, true);
 }
 
-const GLYPH = { queued: "○", running: "◌", done: "●", failed: "✕" };
-function ultraEvent(m) {
-  const c = S.cards[m.call]; if (!c) return;
-  c.card.classList.add("open"); c.tb.classList.add("show");
-  let tree = c.ultra;
-  if (!tree) { tree = c.ultra = { el: el("div", "utree"), phases: {}, rows: {} }; c.tb.prepend(tree.el); }
-  const phase = m.phase || "run";
-  if (!tree.phases[phase]) { const h = el("div", "uphase", phase); tree.el.append(h); tree.phases[phase] = h; }
-  if (m.event === "phase") { tree.phases[phase].dataset.state = m.state; if (m.detail) tree.phases[phase].title = m.detail; return; }
-  if (m.event === "log") { tree.el.append(el("div", "ulog", m.detail || "")); return; }
-  if (m.event === "agent") {
-    let row = tree.rows[m.id];
-    if (!row) { row = tree.rows[m.id] = el("div", "uagent"); tree.phases[phase].after(row); }
-    row.dataset.state = m.state; row.textContent = `${GLYPH[m.state] || "·"} ${m.label || m.id}` + (m.state === "failed" && m.detail ? ` — ${m.detail}` : "");
-  }
+/* ============================================================ questions and permissions live in the status block */
+function waitingBox(cardId, box, what) {
+  const c = S.cards[cardId], t = c?.turn || S.turn || turn();
+  if (c) c.card.classList.add("wait");
+  setStatus(t, "waiting", { box, what, prev: t.st.state === "waiting" ? t.st.prev : t.st.state });
+  document.title = "● dogear — waiting for you";
+  t.status.scrollIntoView({ block: "nearest" });
+  return t;
+}
+function waitingDone(t) {
+  if (!t) return;
+  document.title = S.st?.name || "dogear";
+  setStatus(t, t.st.prev === "checking" ? "checking" : "working", { box: null, what: "" });
 }
 
 function askBox(m) {
-  const c = S.cards[m.id]; if (!c) return;
   const qs = m.questions || [{ question: m.question, options: (m.options || []).map(label => ({ label })) }];
   const box = el("div", "ask form"), state = qs.map(() => ({ selected: new Set(), other: "" }));
   const send = el("button", "sendans", "Send answers"); send.type = "button"; send.disabled = true;
@@ -238,7 +274,7 @@ function askBox(m) {
     if (q.header) head.append(el("span", "qtag", q.header));
     head.append(el("span", "qtext", q.question)); if (q.multi) head.append(el("span", "qmulti", "choose any"));
     const list = el("div", "opts"), prev = el("pre", "preview"); prev.hidden = true;
-    (q.options || []).forEach((o, oi) => {
+    (q.options || []).forEach(o => {
       const b = el("button", "opt"); b.type = "button"; b.dataset.l = o.label;
       const txt = el("span", "otxt"); txt.append(el("b", "", o.label)); if (o.description) txt.append(el("small", "", o.description));
       b.append(el("span", q.multi ? "mark box" : "mark dot"), txt);
@@ -255,69 +291,43 @@ function askBox(m) {
     other.onkeydown = e => { if (e.key === "Enter" && !send.disabled) send.click(); };
     sec.append(head, list, prev, other); box.append(sec);
   });
-  send.onclick = () => { sendWS({ type: "answer", id: m.id, value: state.map(st => ({ selected: [...st.selected], other: st.other })) }); box.remove(); };
-  box.append(send); c.card.classList.add("open"); c.card.append(box);
+  const t = waitingBox(m.id, box, "the model has a question");
+  send.onclick = () => { sendWS({ type: "answer", id: m.id, value: state.map(st => ({ selected: [...st.selected], other: st.other })) }); waitingDone(t); };
+  box.append(send);
   box.querySelector(".opt")?.focus();
 }
 
 function approvalBox(m) {
-  const c = S.cards[m.id]; if (!c) return;
   const box = el("div", "ask"), a = m.args, mcp = m.name.startsWith("mcp__");
   const host = (() => { try { return new URL(/^[a-z]+:/i.test(a.url || "") ? a.url : "https://" + (a.url || "")).hostname; } catch { return ""; } })();
   const title = m.name === "browser_navigate" ? `Open ${host || a.url} in the browser?` : m.name === "browser_eval" ? "Run JavaScript in the page?"
-    : m.name.startsWith("browser_") ? `Allow ${m.name.replace("browser_", "")} in the browser?` : m.name === "Bash" ? "Run this command?" : m.name === "Edit" ? `Edit ${rel(a.file_path || "")}?` : m.name === "Write" ? `Write ${rel(a.file_path || "")}?`
+    : m.name.startsWith("browser_") ? `Allow ${m.name.replace("browser_", "")} in the browser?` : m.name === "Bash" ? "Run this command?"
+    : m.name === "Edit" ? `Edit ${rel(a.file_path || "")}?` : m.name === "Write" ? `Write ${rel(a.file_path || "")}?`
     : mcp ? `Call MCP tool ${m.name.split("__").slice(1).join(" · ")}?` : `Allow ${m.name}?`;
   box.append(el("p", "", title));
   if (m.name === "Bash") box.append(el("pre", "", "$ " + a.command));
   else if (m.name === "browser_navigate") box.append(el("pre", "", a.url));
   else if (m.name === "browser_eval") box.append(el("pre", "", a.expression));
-  else if (m.name === "Edit") box.append(diffEl({ hunks: [[...String(a.old_string).split("\n").map(t => ["-", "", t]), ...String(a.new_string).split("\n").map(t => ["+", "", t])]] }, 14));
-  else if (m.name === "Write") box.append(diffEl({ hunks: [String(a.content).split("\n").map((t, i) => ["+", i + 1, t])] }, 12));
+  else if (m.name === "Edit") box.append(diffEl({ hunks: [[...String(a.old_string).split("\n").map(t => ["-", "", t]), ...String(a.new_string).split("\n").map(t => ["+", "", t])]] }, 14, 99));
+  else if (m.name === "Write") box.append(diffEl({ hunks: [String(a.content).split("\n").map((t, i) => ["+", i + 1, t])] }, 12, 99));
   else box.append(el("pre", "", JSON.stringify(a, null, 2).slice(0, 800)));
+  const t = waitingBox(m.id, box, title);
   const o = el("div", "opts");
-  const opt = (k, txt, ok, always) => { const b = el("button"); b.append(el("kbd", "", k), txt); b.onclick = () => answer(ok, always); return b; };
-  const answer = (ok, always) => { sendWS({ type: "approve", id: m.id, ok, always, key: m.key || m.name }); box.remove(); S.ask = null; };
-  o.append(opt("1", "Yes", true, false), opt("2", m.name === "browser_navigate" ? `Yes, and don't ask again for ${host}` : `Yes, and don't ask again for ${mcp ? "this MCP tool" : m.name} this session`, true, true), opt("3", "No, and tell the agent what to do differently", false, false));
-  box.append(o); c.card.append(box);
+  const answer = (ok, always) => { sendWS({ type: "approve", id: m.id, ok, always, key: m.key || m.name }); S.ask = null; waitingDone(t); };
+  const opt = (k, txt, ok, always) => { const b = el("button"); b.type = "button"; b.append(el("kbd", "", k), txt); b.onclick = () => answer(ok, always); return b; };
+  o.append(opt("1", "Yes", true, false),
+           opt("2", m.name === "browser_navigate" ? `Yes, and don't ask again for ${host}` : `Yes, and don't ask again for ${mcp ? "this MCP tool" : m.name} in this session`, true, true),
+           opt("3", "No", false, false));
+  box.append(o);
   S.ask = { answer };
 }
 
-
-/* ============================================================ rating (phase 4): a good run may teach the library */
-function rateBar(t, rating) {
-  const box = el("div", "rate"); t.rateEl = box; t.after.append(box);
-  const paint = (r, saved) => {
-    box.innerHTML = "";
-    if (r) {
-      box.append(el("span", `rt ${r.value > 0 ? "good" : "bad"}`, r.value > 0 ? "Rated good" : "Rated not good"));
-      if (r.value > 0 && !saved && r.saved) saved = { entries: r.saved };
-      if (r.value > 0) box.append(el("span", "rs", saved ? (saved.error ? "Could not save snippets: " + saved.error : saved.entries.length
-        ? `Saved to the library: ${saved.entries.map(e => e.problem.slice(0, 60) + (e.replaced ? " (updated)" : "")).join(" · ")}` : "No reusable snippet found in this run.") : "Looking for reusable code…"));
-      else if (r.note) box.append(el("span", "rs", r.note));
-      const ch = el("button", "link", "Change"); ch.onclick = () => paint(null); box.append(ch);
-      return;
-    }
-    box.append(el("span", "rl", "Rate this run"));
-    const up = el("button", "", "Good"), dn = el("button", "", "Not good");
-    up.title = "Good runs teach the library: reusable code is saved and offered in later plans";
-    up.onclick = () => { sendWS({ type: "rate", turn: t.i, value: 1 }); };
-    dn.onclick = () => {
-      box.innerHTML = ""; const inp = el("input"); inp.placeholder = "What went wrong? (optional)";
-      const send = el("button", "", "Send"); send.onclick = () => sendWS({ type: "rate", turn: t.i, value: -1, note: inp.value });
-      inp.onkeydown = e => { if (e.key === "Enter") send.click(); };
-      box.append(inp, send); inp.focus();
-    };
-    box.append(up, dn);
-  };
-  t.ratePaint = paint; paint(rating);
-}
-
-/* ============================================================ plan approval (phase 2) */
+/* ============================================================ plan approval card (phase 2) and its task log (phase 3) */
 function planCard(t, plan) {
   t.after.querySelectorAll(".plancard").forEach(n => n.remove());
   const box = el("div", "plancard"), head = el("div", "pc-h"), state = el("span", "pc-s");
   head.append(el("b", "", "Plan"), state);
-  const why = el("details", "pc-why"); why.open = (plan.status || "proposed") === "proposed"; why.append(el("summary", "", "Reasoning"), el("div", "pc-r", plan.reasoning || ""));
+  const why = el("details", "pc-why"); why.open = false; why.append(el("summary", "", "Why this plan"), el("div", "pc-r", plan.reasoning || ""));
   const rows = el("div", "pc-rows"), tasks = (plan.tasks || []).map(x => ({ content: x.content, detail: x.detail || "" }));
   const act = el("div", "pc-a");
   const draw = () => {
@@ -328,11 +338,11 @@ function planCard(t, plan) {
       let tx;
       if (editable) { tx = el("input"); tx.value = x.content; tx.oninput = () => { x.content = tx.value; }; tx.spellcheck = false; }
       else tx = el("span", "pc-t", x.content);
-      const e = (plan.log || [])[i];                                  // phase 3: what happened to this task
+      const e = (plan.log || [])[i];
       if (e && !editable) { r.classList.add("pc-" + e.status); n.textContent = { done: "✓", running: "◌", replan: "↺", stopped: "■", unfinished: "?" }[e.status] || String(i + 1); }
       r.append(n, tx);
       if (x.detail) r.append(el("div", "pc-d", x.detail));
-      if (e && !editable && e.status !== "running" && e.summary) r.append(el("div", "pc-sum", `${e.summary}${e.secs ? ` · ${plural(e.steps || 0, "step")} · ${e.secs}s` : ""}`));
+      if (e && !editable && e.status !== "running" && e.summary) r.append(el("div", "pc-sum", `${e.summary}${e.secs ? ` · ${plural(e.steps || 0, "step")} · ${mmss(e.secs)}` : ""}`));
       if (editable) {
         const up = el("button", "", "↑"), dn = el("button", "", "↓"), rm = el("button", "", "✕");
         up.title = "Move up"; dn.title = "Move down"; rm.title = "Remove";
@@ -349,15 +359,13 @@ function planCard(t, plan) {
       rows.append(add);
     }
   };
-  const label = { proposed: "waiting for your approval", approved: "running task by task", rejected: "rejected", replan: "the model asks for a new plan", done: "done", stopped: "stopped" };
+  const label = { proposed: "waiting for your approval", approved: "running task by task", rejected: "rejected", replan: "needs a new plan", done: "done", stopped: "stopped" };
   const paint = () => {
     state.textContent = label[plan.status] || plan.status; state.className = "pc-s " + plan.status;
     act.innerHTML = "";
     if (plan.status === "proposed") {
-      const mode = el("select"); [["edit", "Edits"], ["auto", "Auto"], ["ask", "Review"]].forEach(([v, l]) => mode.append(new Option(l, v)));
-      mode.value = S.mode === "plan" ? (S.prevMode || "edit") : S.mode; mode.title = "Permission mode for the run";
-      const go = el("button", "primary", "Approve and run");
-      go.onclick = () => { if (!tasks.length) return; sendWS({ type: "plan_approve", tasks, mode: mode.value }); setMode(mode.value); setBusy(true); };
+      const go = el("button", "primary", "Approve and run"); go.title = `Runs in the current mode (${MODE_TXT[S.mode]})`;
+      go.onclick = () => { if (!tasks.length) return; sendWS({ type: "plan_approve", tasks, mode: S.mode }); setBusy(true); };
       const rej = el("button", "", "Revise…");
       rej.onclick = () => {
         act.innerHTML = ""; const ta = el("textarea"); ta.placeholder = "What should change? The model plans again with your feedback."; ta.rows = 3;
@@ -365,7 +373,7 @@ function planCard(t, plan) {
         send.onclick = () => { sendWS({ type: "plan_reject", feedback: ta.value }); setBusy(true); };
         cancel.onclick = paint; act.append(ta, send, cancel); ta.focus();
       };
-      act.append(mode, go, rej);
+      act.append(go, rej);
     } else if (plan.status === "rejected" && plan.feedback) act.append(el("div", "pc-fb", "Feedback: " + plan.feedback));
     else if (plan.status === "replan" && plan.feedback) act.append(el("div", "pc-fb", "Reason: " + plan.feedback));
   };
@@ -378,8 +386,7 @@ function planCard(t, plan) {
   };
 }
 
-/* ============================================================ memory */
-const MEM_LABEL = { memory: "note", snippet: "snippet", skill: "skill" };
+/* ============================================================ memory (drawer pane) */
 async function memSave(item) {
   const r = await fetch("/api/memory", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: S.sid, ...item }) });
   if (!r.ok) { note("Not saved: " + ((await r.json().catch(() => ({}))).detail || r.status)); return false; }
@@ -396,35 +403,4 @@ function memForm() {
   go.onclick = async () => { if (await memSave({ kind: kind.value, name: name.value, content: text.value, scope: scope.value, triggers: trig.value, description: kind.value === "skill" ? name.value : "" })) f.hidden = true; };
   const row = el("div", "mem-row"); row.append(kind, scope);
   f.append(row, name, trig, text, go); name.focus();
-}
-function snippetForm(btn, c) {
-  const w = el("span", "snip-f"), name = el("input"), ok = el("button", "copy", "Save"); name.placeholder = "snippet name"; name.value = "";
-  ok.onclick = async () => { if (!name.value.trim()) return; if (await memSave({ kind: "snippet", name: name.value, content: c.code, language: c.lang || "", description: "", scope: "project" })) { w.replaceWith(el("span", "snip-ok", "Saved")); } };
-  name.onkeydown = e => { if (e.key === "Enter") ok.click(); };
-  w.append(name, ok); btn.replaceWith(w); name.focus();
-}
-/* notes and snippets the harness saved by itself after a longer run: one quiet line with Undo */
-function autoSavedLine(t, items) {
-  t.after.querySelectorAll(".autosaved").forEach(n => n.remove());
-  const box = el("div", "autosaved"), what = items.map(i => i.name).join(" · ");
-  box.append(el("span", "", `Saved to memory: ${what}`));
-  const undo = el("button", "link", "Undo");
-  undo.onclick = async () => {
-    await Promise.all(items.map(i => fetch(`/api/memory?session=${encodeURIComponent(S.sid || "")}&kind=${i.kind}&name=${encodeURIComponent(i.id)}&scope=${i.scope}`, { method: "DELETE" })));
-    box.innerHTML = ""; box.append(el("span", "", "Removed again.")); loadMemory();
-  };
-  box.append(undo); t.after.append(box);
-}
-
-/* code the harness added to the library by itself after a run that ended with passing tests: one quiet line with Undo */
-function libraryAutoLine(t, entries) {
-  t.after.querySelectorAll(".autosaved.lib").forEach(n => n.remove());
-  const box = el("div", "autosaved lib");
-  box.append(el("span", "", "Saved to the library (tests passed): " + entries.map(e => e.problem.slice(0, 50) + (e.replaced ? " (updated)" : "")).join(" · ")));
-  const undo = el("button", "link", "Undo");
-  undo.onclick = async () => {
-    await Promise.all(entries.map(e => fetch(`/api/library/${e.id}`, { method: "DELETE" })));
-    box.innerHTML = ""; box.append(el("span", "", "Removed again.")); sbBadges(); if (SB.tab === "memory") loadMemory();
-  };
-  box.append(undo); t.after.append(box);
 }

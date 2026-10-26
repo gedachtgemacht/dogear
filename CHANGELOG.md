@@ -11,6 +11,12 @@
 - `uv run pytest` runs every check that can run on the machine and skips the ones that need a browser, a model or the design dataset.
 - `/init` writes `DOGEAR.md` (it still said `KERF.md`).
 - Plan flow phase 3: after approval the harness runs the board one task per turn; `complete_current_task` and `request_replan` close a task or send the plan back; task log on the plan card; review and quality gate once after the last task.
+- The chat shows the process folded and the answer once: one status block per turn (working, waiting for you, checking, done, stopped), the last three steps while it runs, everything else behind "Show steps"; questions and permissions appear in the status block and in the window title; panels never open by themselves.
+- The receipt: tests, page audit before and after the fix pass, console errors, and a status the harness computed (Verified / Unverified / Stopped).
+- Modes renamed by what they ask (Ask all, Ask commands, Don't ask); "Plan first" is a toggle on the composer, not a mode. The kanban column is a one-line task strip above the chat.
+- Quieter: sans for what the UI says, mono only for machine data; dots carry state, no second accent colour; diffs no longer wrap and are capped; drawer with a scrim; settings grouped.
+- Cut from the UI and the model's toolbox (code kept): Ultra, rating and snippet learning, outline and pins, answer re-rendering, twelve generic skills (now in `skills/extra`). Parallel variants are a setting.
+- Open approvals and questions reach windows that join later.
 - README, architecture notes, MIT license.
 
 ## Before 0.2.0

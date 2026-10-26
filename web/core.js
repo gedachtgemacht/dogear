@@ -71,8 +71,23 @@ function md(src) {
 }
 
 /* ============================================================ state */
-const S = { runs: {}, viewOnly: false, meta: { parent: null, pins: [], titles: {}, lineage: null }, todos: [], ultra: null, restore: null, planOpen: false, wsAuto: false, wsDismissed: false, turns: [], turn: null, curWrap: null, ws: null, busy: false, root: "", mode: "edit", cur: null, curText: "", think: null, thinkText: "", cards: {}, queue: [],
-  changed: new Map(), flash: new Set(), openDirs: new Set(), sid: null, ask: null, t0: 0, tok: 0, follow: true, st: null, hist: [], hi: 0, webTouched: false };
+const S = {
+  // connection and session
+  ws: null, sid: null, root: "", st: null,          // st: /api/state (settings, models, sessions)
+  busy: false, viewOnly: false, opened: false,
+  meta: { parent: null, note: "", lineage: null, worktree: null },
+  // the conversation
+  turns: [], turn: null, cards: {}, queue: [],       // queue: tool-call ids while a stored session is replayed
+  cur: null, curText: "", think: null, thinkText: "",
+  ask: null,                                         // the open approval (answered with keys 1/2/3)
+  todos: [], draft: false, planCard: null,
+  runs: {}, restore: null,
+  // the workspace
+  changed: new Map(), flash: new Set(), openDirs: new Set(), follow: true, webTouched: false,
+  // the composer
+  mode: "edit", hist: [], hi: 0, t0: 0, tok: 0,
+  variants: false,                                   // settings: offer parallel variants
+};
 const log = $("#log");
 const rel = p => (S.root && p.startsWith(S.root + "/")) ? p.slice(S.root.length + 1) : p;
 const q = o => Object.entries(o).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");

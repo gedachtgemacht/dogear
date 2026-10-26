@@ -2,10 +2,6 @@
    One tabbed drawer instead of one long scroll: Files | Sessions | Memory | MCP.
    Loaded after core.js; this file only declares things, it reaches S, el, $, api ... when its functions run. */
 const SB = { lib: [], tab: "files", view: "changed", fq: "", sq: "", mk: "all", mq: "", mem: [], mcp: [], exp: new Map(), older: false };
-const sbStore = {
-  get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
-  set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } },
-};
 const baseName = p => (p || "").replace(/\/+$/, "").split("/").pop() || p || "";
 const debounce = (fn, ms) => { let t = 0; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 function ago(t) {
@@ -16,12 +12,11 @@ function shortPath(p) {
   const parts = p.replace(/^\/home\/[^/]+/, "~").split("/").filter(Boolean);
   return parts.length > 3 ? "…/" + parts.slice(-2).join("/") : parts.join("/") || "/";
 }
-const plural2 = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 function sbInit() {
-  SB.tab = sbStore.get("dogear-sb-tab", "files"); SB.view = sbStore.get("dogear-sb-view", "changed");
+  SB.tab = store.get("dogear-sb-tab", "sessions"); SB.view = store.get("dogear-sb-view", "changed");
   document.querySelectorAll("#dtabs button").forEach(b => b.onclick = () => sbTab(b.dataset.t));
-  document.querySelectorAll("#fseg button").forEach(b => b.onclick = () => { SB.view = b.dataset.v; sbStore.set("dogear-sb-view", SB.view); renderFiles(); });
+  document.querySelectorAll("#fseg button").forEach(b => b.onclick = () => { SB.view = b.dataset.v; store.set("dogear-sb-view", SB.view); renderFiles(); });
   document.querySelectorAll("#mseg button").forEach(b => b.onclick = () => { SB.mk = b.dataset.v; renderMemory(); });
   $("#fq").oninput = debounce(e => { SB.fq = e.target.value; renderFiles(); }, 150);
   $("#sq").oninput = e => { SB.sq = e.target.value; renderSessions(); };
@@ -29,8 +24,8 @@ function sbInit() {
   sbTab(SB.tab);
 }
 function sbTab(t) {
-  if (!["files", "sessions", "memory", "mcp"].includes(t)) t = "files";
-  SB.tab = t; sbStore.set("dogear-sb-tab", t);
+  if (!["files", "sessions", "memory", "mcp"].includes(t)) t = "sessions";
+  SB.tab = t; store.set("dogear-sb-tab", t);
   document.querySelectorAll("#dtabs button").forEach(b => { const on = b.dataset.t === t; b.classList.toggle("on", on); b.setAttribute("aria-selected", String(on)); });
   document.querySelectorAll(".dpane").forEach(p => { p.hidden = p.id !== "dp-" + t; });
   if (t === "memory") loadMemory();
@@ -48,6 +43,8 @@ function sbBadges() {
   set("#bd-memory", SB.mem.length);
   const bad = SB.mcp.some(s => s.state === "error");
   set("#bd-mcp", SB.mcp.length, bad ? "bad" : "");
+  const waiting = Object.values(S.runs).filter(r => r.status === "waiting").length;   // a background session needs you
+  $("#menu").classList.toggle("pulse", waiting > 0); $("#menu").title = waiting ? `${plural(waiting, "session")} waiting for you` : "Sessions and files";
 }
 // called from the run events so the pane stays current while it is open
 function sbRuns() { if (!$("#drawer").hidden && SB.tab === "sessions") renderSessions(); else sbBadges(); }
@@ -114,7 +111,7 @@ function runCards() {
   const box = el("div", "kruns");
   for (const r of list) {
     const c = el("div", `krun ${r.status}`), top = el("div", "rt");
-    top.append(el("span", "dot"), el("span", "rn", r.title)); c.append(top, el("div", "rl", `${plural2(r.steps || 0, "step")} · ${r.last || r.status}`));
+    top.append(el("span", "dot"), el("span", "rn", r.title)); c.append(top, el("div", "rl", `${plural(r.steps || 0, "step")} · ${r.last || r.status}`));
     const rb = el("div", "rb"), btn = (txt, fn) => { const b = el("button", "", txt); b.onclick = fn; rb.append(b); };
     if (r.status === "waiting" && r.approval) {
       const a = r.approval, what = a.name === "Bash" ? "$ " + (a.args.command || "") : a.name + " " + JSON.stringify(a.args).slice(0, 80);
@@ -145,8 +142,8 @@ function sessionRow(s, kids, depth) {
   const main = el("div", "sm"), title = el("div", "st", s.title || "Untitled"); title.title = s.title;
   const meta = el("div", "sx");
   if (depth && s.parent_turn != null) meta.append(el("span", "", s.where === "before" ? `edited at turn ${s.parent_turn + 1}` : `from turn ${s.parent_turn + 1}`));
-  meta.append(el("span", "", plural2(s.turns || 0, "turn")), el("span", "", ago(s.updated)));
-  if (hasKids) meta.append(el("span", "", plural2(kids.length, "branch").replace(/branchs/, "branches")));
+  meta.append(el("span", "", plural(s.turns || 0, "turn")), el("span", "", ago(s.updated)));
+  if (hasKids) meta.append(el("span", "", plural(kids.length, "branch").replace(/branchs/, "branches")));
   if (s.worktree) meta.append(el("span", "chip", "worktree"));
   if (run) meta.append(el("span", `chip st-${run.status}`, run.status));
   main.append(title);
@@ -267,7 +264,7 @@ function renderMcp(servers) {
   if (!SB.mcp.length) { const d = el("div", "dempty"); d.innerHTML = "No MCP servers.<br>Add <code>.mcp.json</code> to the project or <code>~/dogear/mcp.json</code>."; box.append(d); sbBadges(); return; }
   for (const s of SB.mcp) {
     const d = el("div", `mcp-s ${s.state}`), h = el("div", "mh");
-    h.innerHTML = `<i></i><b>${esc(s.name)}</b><span class="meta">${s.state === "ready" ? plural2(s.tools.length, "tool") : esc(s.state)}</span>`;
+    h.innerHTML = `<i></i><b>${esc(s.name)}</b><span class="meta">${s.state === "ready" ? plural(s.tools.length, "tool") : esc(s.state)}</span>`;
     d.append(h);
     const sm = el("small", "", s.error || s.tools.join(", ")); sm.hidden = !s.error; d.append(sm);
     d.onclick = () => sm.hidden = !sm.hidden; box.append(d);
