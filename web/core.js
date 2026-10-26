@@ -62,11 +62,27 @@ function highlight(text, lang) {
 }
 
 function md(src) {
+  // small, predictable Markdown: fenced code, inline code, bold, italics, headings, bullets, numbered lists and pipe tables
   return src.split(/```/).map((p, i) => {
     if (i % 2) { const nl = p.indexOf("\n"), lang = EXT[p.slice(0, nl).trim().toLowerCase()] || langOf("x." + p.slice(0, nl).trim());
       return `<pre><code>${highlight(p.slice(nl + 1).replace(/\n$/, ""), lang).join("\n")}</code></pre>`; }
-    return esc(p).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-      .replace(/^#{1,4} +(.+)$/gm, '<strong class="h">$1</strong>').replace(/^[-*] +/gm, "• ");
+    const inline = t => esc(t).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    const out = [], lines = p.split("\n");
+    for (let k = 0; k < lines.length; k++) {
+      const l = lines[k];
+      if (/^\s*\|.*\|\s*$/.test(l) && /^\s*\|?\s*:?-{2,}/.test(lines[k + 1] || "")) {          // a pipe table: header, separator, rows
+        const cells = r => r.trim().replace(/^\||\|$/g, "").split("|").map(c => inline(c.trim()));
+        let html = "<table><tr>" + cells(l).map(c => `<th>${c}</th>`).join("") + "</tr>";
+        for (k += 2; k < lines.length && /^\s*\|.*\|\s*$/.test(lines[k]); k++) html += "<tr>" + cells(lines[k]).map(c => `<td>${c}</td>`).join("") + "</tr>";
+        k--; out.push(html + "</table>"); continue;
+      }
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(l)) { out.push("<hr>"); continue; }
+      const h = /^#{1,4} +(.+)$/.exec(l); if (h) { out.push(`<strong class="h">${inline(h[1])}</strong>`); continue; }
+      const li = /^(\s*)[-*] +(.+)$/.exec(l); if (li) { out.push(`${li[1]}• ${inline(li[2])}`); continue; }
+      const ol = /^(\s*)(\d+)[.)] +(.+)$/.exec(l); if (ol) { out.push(`${ol[1]}${ol[2]}. ${inline(ol[3])}`); continue; }
+      out.push(inline(l));
+    }
+    return out.join("\n").replace(/\n(<table>|<hr>)/g, "$1").replace(/(<\/table>|<hr>)\n/g, "$1");
   }).join("");
 }
 

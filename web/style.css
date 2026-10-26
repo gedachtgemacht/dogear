@@ -178,6 +178,10 @@ code { font: 11.5px var(--mono); }
 .md pre { margin: 8px 0; padding: 10px 12px; background: var(--code); font: 12.5px/1.55 var(--mono); overflow-x: auto; white-space: pre; border-radius: 6px; border: 1px solid var(--line); }
 .md code { font: 12px var(--mono); background: var(--panel3); padding: 1px 5px; border-radius: 4px; }
 .md pre code { background: none; padding: 0; }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+.md table { border-collapse: collapse; margin: 8px 0; font-size: 13.5px; line-height: 1.45; white-space: normal; }
+.md th { text-align: left; color: var(--mute); font: 600 11.5px var(--ui); letter-spacing: .04em; padding: 5px 14px 5px 0; border-bottom: 1px solid var(--line); }
+.md td { padding: 6px 14px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 .md strong.h { font-weight: 650; font-size: 14px; display: block; margin-top: 6px; }
 .think { color: var(--mute); font-size: 12.5px; }
 .think summary { cursor: pointer; }
