@@ -5,7 +5,7 @@ A coding agent that runs on your own machine, with a workspace you can watch.
 dogear talks to a local model through [Ollama](https://ollama.com), gives it the tools a coding agent needs (read, write, edit, search, shell, tests, git, a real browser), and shows you what it does while it does it: files being typed, diffs, the terminal, and a live browser that you and the agent share. Nothing leaves your machine unless the agent opens a web page.
 
 <p align="center">
-  <img src="docs/screenshots/session-dark.png" width="820" alt="A session: the chat on the left with tool cards and a diff, the plan board on the right">
+  <img src="docs/screenshots/session.png" width="820" alt="A session: the chat with tool cards, the agent's reasoning between them and an edit diff; the plan board on the right">
 </p>
 
 ## What it does
@@ -24,6 +24,10 @@ dogear talks to a local model through [Ollama](https://ollama.com), gives it the
 - **Model profiles.** Every model is recognised the first time it is used (size, MoE, tools, vision, reasoning) and gets a toolbox and prompt style that fits it. Small models get a lean toolbox and rescue logic for tool calls they write as text.
 - **Ultra.** A deterministic multi-agent orchestrator for large reviews, research, design comparisons and audits: finders, adversarial verifiers, synthesis. Lives in the UI as a live tree.
 - **Context care.** `/compact` condenses the conversation into a briefing; it happens automatically when the context window is 70 % full. Images can be attached, pasted or dropped.
+
+<p align="center">
+  <img src="docs/screenshots/workspace.png" width="820" alt="The workspace open next to the chat: the live browser shows the page the agent is building">
+</p>
 
 ## Quick start
 
