@@ -1,5 +1,11 @@
+# runtime state: sessions, images, Chrome profile, library, learned skills, benchmark output
+data/
+# default workspace for agent sessions
+projects/
+# local MCP servers
+mcp.json
 .venv/
 __pycache__/
-data/
-projects/
 *.pyc
+.pytest_cache/
+*.log

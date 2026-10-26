@@ -26,7 +26,7 @@ from .brand import NAME
 WEB = Path(__file__).resolve().parent.parent / "web"
 SETTINGS = A.DATA / "settings.json"
 DEFAULTS = {"model": "qwen3.6:35b-a3b", "think": False, "mode": "edit", "num_ctx": 32768, "review": True,
-            "root": str(A.DATA.parent / "projects")}
+            "root": os.environ.get("DOGEAR_ROOT") or str(A.DATA.parent / "projects")}
 OLD_MODES = {"vorsicht": "ask", "werkeln": "edit", "frei": "auto"}
 client: httpx.AsyncClient
 preview_root = {"path": DEFAULTS["root"]}

@@ -1,7 +1,10 @@
-"""Minimal MCP client (stdio transport, JSON-RPC 2.0, newline-delimited).
+"""Minimal MCP client: stdio and Streamable HTTP transports, JSON-RPC 2.0.
 
-Config: ~/dogear/mcp.json and <project>/.mcp.json, same shape as Claude Code:
-  {"mcpServers": {"name": {"command": "npx", "args": ["-y", "..."], "env": {}}}}
+Config: <repo>/mcp.json (global) and <project>/.mcp.json, same shape as Claude Code:
+  {"mcpServers": {
+     "files":  {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."], "env": {}},
+     "remote": {"url": "http://127.0.0.1:8080/mcp", "headers": {"Authorization": "Bearer ..."}}
+  }}
 Tools show up to the model as mcp__<server>__<tool>.
 """
 import asyncio
@@ -10,6 +13,8 @@ import os
 import re
 import signal
 from pathlib import Path
+
+import httpx
 
 GLOBAL_CFG = Path(__file__).resolve().parent.parent / "mcp.json"
 PROTOCOL = "2025-06-18"
@@ -35,7 +40,7 @@ class Server:
 
     async def start(self):
         if "command" not in self.cfg:
-            self.state, self.error = "unsupported", "only stdio servers (command/args) are supported"
+            self.state, self.error = "unsupported", "a server needs either command/args (stdio) or url (HTTP)"
             return
         env = {**os.environ, **{k: str(v) for k, v in (self.cfg.get("env") or {}).items()}}
         try:
@@ -52,18 +57,21 @@ class Server:
                                                      "clientInfo": {"name": "dogear", "version": "0.2"}}, timeout=40)
             self.info = init.get("serverInfo", {})
             await self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-            cursor = None
-            while True:
-                r = await self.request("tools/list", {"cursor": cursor} if cursor else {}, timeout=20)
-                self.tools += r.get("tools", [])
-                cursor = r.get("nextCursor")
-                if not cursor:
-                    break
+            await self._list_tools()
             self.state = "ready"
         except Exception as e:
             self.state = "error"
             self.error = (str(e) or type(e).__name__) + (" | " + self.stderr[-1] if self.stderr else "")
             await self.close()
+
+    async def _list_tools(self):
+        cursor = None
+        while True:
+            r = await self.request("tools/list", {"cursor": cursor} if cursor else {}, timeout=20)
+            self.tools += r.get("tools", [])
+            cursor = r.get("nextCursor")
+            if not cursor:
+                break
 
     async def _send(self, obj):
         self.proc.stdin.write((json.dumps(obj) + "\n").encode())
@@ -135,6 +143,108 @@ class Server:
             t.cancel()
 
 
+class HttpServer(Server):
+    """MCP over Streamable HTTP: every JSON-RPC message is a POST; the answer comes back as JSON or as an SSE stream.
+    The session id the server hands out on initialize is echoed in every later request."""
+
+    def __init__(self, name: str, cfg: dict, cwd: Path):
+        super().__init__(name, cfg, cwd)
+        self.url = str(cfg.get("url", ""))
+        self.headers = {str(k): str(v) for k, v in (cfg.get("headers") or {}).items()}
+        self.session_id = ""
+        self.client: httpx.AsyncClient | None = None
+
+    async def start(self):
+        if not self.url.startswith(("http://", "https://")):
+            self.state, self.error = "error", f"url must start with http:// or https://: {self.url!r}"
+            return
+        self.client = httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15))
+        try:
+            init = await self.request("initialize", {"protocolVersion": PROTOCOL, "capabilities": {},
+                                                     "clientInfo": {"name": "dogear", "version": "0.2"}}, timeout=40)
+            self.info = init.get("serverInfo", {})
+            await self._notify("notifications/initialized")
+            await self._list_tools()
+            self.state = "ready"
+        except Exception as e:
+            self.state, self.error = "error", str(e) or type(e).__name__
+            await self.close()
+
+    def _hdr(self) -> dict:
+        h = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json", **self.headers}
+        if self.session_id:
+            h["Mcp-Session-Id"] = self.session_id
+        return h
+
+    async def _notify(self, method: str, params: dict | None = None):
+        body = {"jsonrpc": "2.0", "method": method, **({"params": params} if params else {})}
+        r = await self.client.post(self.url, json=body, headers=self._hdr())
+        if r.status_code >= 400:
+            raise MCPError(f"{method}: HTTP {r.status_code}")
+
+    async def request(self, method, params, timeout=60):
+        self.n += 1
+        rid = self.n
+        body = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
+        try:
+            async with self.client.stream("POST", self.url, json=body, headers=self._hdr(), timeout=timeout) as r:
+                if r.status_code >= 400:
+                    raise MCPError(f"{method}: HTTP {r.status_code} {(await r.aread())[:200].decode('utf-8', 'replace')}")
+                sid = r.headers.get("mcp-session-id")
+                if sid:
+                    self.session_id = sid
+                ctype = r.headers.get("content-type", "").split(";")[0].strip()
+                if ctype == "text/event-stream":
+                    msg = await self._sse_result(r, rid)
+                else:
+                    msg = json.loads(await r.aread())
+        except httpx.TimeoutException:
+            raise MCPError(f"{method} timed out after {timeout}s")
+        except httpx.HTTPError as e:
+            raise MCPError(f"{method}: {e}")
+        if msg is None:
+            raise MCPError(f"{method}: the stream ended without a response")
+        if "error" in msg:
+            raise MCPError(msg["error"].get("message", "error"))
+        return msg.get("result", {})
+
+    async def _sse_result(self, r, rid: int):
+        """Read SSE events until the response with our id arrives. Server requests on the way (ping) are answered."""
+        data: list[str] = []
+        async for line in r.aiter_lines():
+            if line.startswith("data:"):
+                data.append(line[5:].lstrip())
+                continue
+            if line.strip() or not data:
+                continue
+            try:
+                m = json.loads("\n".join(data))
+            except ValueError:
+                data = []
+                continue
+            data = []
+            for one in (m if isinstance(m, list) else [m]):
+                if isinstance(one, dict) and one.get("id") == rid and ("result" in one or "error" in one):
+                    return one
+                if isinstance(one, dict) and "method" in one and "id" in one:
+                    res = {"result": {}} if one["method"] == "ping" else {"error": {"code": -32601, "message": "not supported"}}
+                    try:
+                        await self.client.post(self.url, json={"jsonrpc": "2.0", "id": one["id"], **res}, headers=self._hdr())
+                    except httpx.HTTPError:
+                        pass
+        return None
+
+    async def close(self):
+        if self.client:
+            if self.session_id:
+                try:
+                    await self.client.delete(self.url, headers=self._hdr(), timeout=5)
+                except httpx.HTTPError:
+                    pass
+            await self.client.aclose()
+            self.client = None
+
+
 class MCP:
     def __init__(self):
         self.servers: dict[str, Server] = {}
@@ -157,7 +267,7 @@ class MCP:
             await self.servers.pop(name).close()
         new = [n for n in cfg if n not in self.servers]
         for n in new:
-            self.servers[n] = Server(n, cfg[n], root)
+            self.servers[n] = (HttpServer if "url" in cfg[n] and "command" not in cfg[n] else Server)(n, cfg[n], root)
             self.sig[n] = json.dumps(cfg[n], sort_keys=True) + str(root)
         await asyncio.gather(*(self.servers[n].start() for n in new))
         self.root = root

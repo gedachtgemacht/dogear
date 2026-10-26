@@ -1,4 +1,4 @@
-"""Streaming-Client für den lokalen Ollama-Server."""
+"""Streaming client for the local Ollama server."""
 import asyncio
 import json
 

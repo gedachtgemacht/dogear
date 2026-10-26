@@ -1,6 +1,6 @@
-/* ============================================================ sidebar
+/* ============================================================ sidebar (part 2)
    One tabbed drawer instead of one long scroll: Files | Sessions | Memory | MCP.
-   Loaded before app.js; this file only declares things, it reaches S, el, $, api ... when its functions run. */
+   Loaded after core.js; this file only declares things, it reaches S, el, $, api ... when its functions run. */
 const SB = { lib: [], tab: "files", view: "changed", fq: "", sq: "", mk: "all", mq: "", mem: [], mcp: [], exp: new Map(), older: false };
 const sbStore = {
   get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },

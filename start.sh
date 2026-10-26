@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
+# Starts dogear on http://127.0.0.1:7870 (pass --port, --root, --open, see python -m dogear --help)
 cd "$(dirname "$0")"
-exec uv run uvicorn dogear.server:app --host 127.0.0.1 --port 7870
+exec uv run python -m dogear "$@"

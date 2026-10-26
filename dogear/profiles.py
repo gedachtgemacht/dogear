@@ -90,7 +90,7 @@ def classify(params_b: float | None, moe: bool, active_b: float | None) -> tuple
         return "medium", "standard", "full"
     if moe and params_b >= 20:
         # Sparse models of this size handled the whole toolbox in benchmarks (qwen3.6 35B-A3B: 7/7), so they are not
-        # sized by their active parameters. Calibrate (tools/calibrate.py) to confirm for a new model.
+        # sized by their active parameters. Calibrate (scripts/calibrate.py) to confirm for a new model.
         return ("large" if params_b >= 60 else "medium"), "full", "full"
     if moe:
         params_b *= 0.6                              # a small sparse model is weaker than its parameter count suggests
