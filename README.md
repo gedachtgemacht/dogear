@@ -25,10 +25,10 @@ dogear talks to a local model through [Ollama](https://ollama.com), gives it the
 - **Undo.** Every run starts with a shadow checkpoint of the project (a git commit under `refs/dogear/...`, never touching your branches). One click puts the files back.
 - **Edit and retry.** Hover a message, edit it and send it again as a new session based on this one; compare the two side by side, keep the files of the one you like. Parallel variants (two to four sessions in their own git worktrees) can be switched on in the settings.
 - **Quality gate for web work.** After changes to HTML/CSS/JS the harness measures the page itself (overflow, contrast, holes in grids, empty boxes, tiny targets, placeholder images, generated-UI tells) at desktop and phone width and starts a fix pass when it finds something. Optionally a copy check proofreads the visible text against the brief.
-- **Direction before the page.** For a web brief planned with Plan first, the approval card shows pictures of the three most similar solved briefs from a library of 300 design plans. Pick one (its palette, type and signature move go into every task briefing), say "surprise me", or none. The audit measures defects; this is the cheap way to get taste.
+- **A look before the page.** For a web brief planned with Plan first, the approval card shows pictures of 25 looks, one solved page per art style in a library of 300 design plans: linocut, blueprint, risograph, terminal, ukiyo-e, … Pick one (its technique, palette logic and type go into every task briefing, applied to your subject), say "surprise me", or none. The audit measures defects; this is the cheap way to get taste.
 
 <p align="center">
-  <img src="docs/screenshots/direction.png" width="820" alt="The approval card of a plan for a coffee roastery site: three pictures of similar solved briefs to pick a direction from, surprise me, or none; then the task list and Approve and run">
+  <img src="docs/screenshots/direction.png" width="820" alt="The approval card of a plan for a coffee roastery site: pictures of looks to pick from, surprise me, or none; then the task list and Approve and run">
 </p>
 
 <p align="center">

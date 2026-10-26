@@ -803,9 +803,13 @@ class Agent:
             await self.send({"type": "notice", "text": "Skills: " + ", ".join(skill_names)})
         self._refs = None
         if cfg.mode == "plan" and "web-design" in skill_names:
-            # the user picks the direction on the approval card; the model sees the chosen plan in every task briefing
-            self._refs = [{"id": h["id"], "problem": h["problem"][:160], "solution": h["solution"][:1500], "score": h.get("score", 0)}
-                          for h in _similar(await self._library(text, 3, "design-plan"))]
+            # the user picks a look on the approval card (one page per art style in the library, whatever its subject);
+            # the chosen plan's technique goes into every task briefing
+            try:
+                self._refs = await asyncio.to_thread(library.looks)
+            except Exception as e:
+                log.warning("library looks failed: %s", e)
+                self._refs = []
         if cfg.mode != "plan" and "web-design" in skill_names:
             refs = _similar(await self._library(text, 2, "design-plan"))   # reference designs for page briefs: direction, not templates
             if refs:
@@ -1159,7 +1163,11 @@ class Agent:
         entry = library.get(int(ref)) if str(ref).isdigit() else None
         if not entry:
             return ""
-        return ("\n\nDesign direction chosen by the user (follow its palette, type and signature move; adapt the content to this brief):\n"
+        look = next((r for r in plan.get("references") or [] if r.get("id") == int(ref)), {})
+        return (f"\n\nLOOK CHOSEN BY THE USER: {look.get('label') or 'the reference plan below'}. This is a hard requirement, not a suggestion: "
+                "the page must visibly be in this look, whatever the request says about keeping it clean or simple. Below is how a "
+                "solved brief with a different subject executed the look. Take its technique, palette logic, type choices and signature "
+                "move; take none of its content or subject. Do not fall back to a neutral system-font design.\n"
                 + entry["solution"][:2500])
 
     async def run_plan(self, pm: dict, tasks: list[dict], model: str, think: bool, mode: str, num_ctx: int, review_on: bool):

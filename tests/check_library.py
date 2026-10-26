@@ -44,6 +44,11 @@ async def unit():
             hits = await L.search(c, URL, q, 3)
             print("  ", q[:48].ljust(48), [(h["id"], h["score"]) for h in hits])
             check(f"search finds the right entry for: {q[:40]}", hits and hits[0]["id"] == want)
+        for style, subj in (("linocut", "a fish restaurant menu"), ("linocut", "a bakery landing page"), ("neon", "a club events page")):
+            await L.add(c, URL, {"problem": f"Design {subj} in {style} style", "solution": "- Style: " + style, "language": "design-plan",
+                                 "framework": f"html, {style}", "extra": "<html>page</html>"})
+        lk = L.looks()
+        check("looks: one representative page per art style, labelled", [(l["label"], l["style"]) for l in lk] == [("Linocut", "linocut"), ("Neon", "neon")], str(lk))
         miss = await L.search(c, URL, "configure a kubernetes helm chart for postgres", 3)
         print("   unrelated query ->", [(h["id"], h["score"]) for h in miss])
         check("unrelated query returns nothing", not miss)
@@ -51,7 +56,8 @@ async def unit():
             await L.add(c, URL, {"problem": "leaks a key", "solution": "token = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'"}); check("secrets are refused", False)
         except ValueError:
             check("secrets are refused", True)
-        check("delete", L.delete(a["id"]) and len(L.entries()) == 2)
+        n = len(L.entries())
+        check("delete", L.delete(a["id"]) and len(L.entries()) == n - 1)
         au = await L.add(c, URL, {"problem": "Parse a semver string into major, minor and patch numbers.", "solution": "def semver(v):\n    a, b, c = v.split('.')\n    return int(a), int(b), int(c)\n",
                                   "language": "python", "auto": True})
         check("auto entry carries the mark", next(e for e in L.entries() if e["id"] == au["id"])["auto"] is True)

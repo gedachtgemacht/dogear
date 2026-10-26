@@ -385,7 +385,7 @@ function planCard(t, plan) {
     if (!refs) { dir.hidden = true; return; }
     dir.hidden = false;
     const editable = plan.status === "proposed";
-    dir.append(el("div", "pc-dh", !editable ? "Direction" : refs.length ? "Direction: pick a look, or let the model choose" : "Direction: nothing similar in the library; let the model choose"));
+    dir.append(el("div", "pc-dh", !editable ? "Look" : refs.length ? "Look: pick one, or let the model choose" : "Look: the library is empty; let the model choose"));
     const row = el("div", "pc-thumbs");
     const opt = (key, node, title) => {
       const b = el("button", "pc-th" + (direction === key ? " on" : "")); b.type = "button"; b.title = title || "";
@@ -394,14 +394,16 @@ function planCard(t, plan) {
       if (!editable && direction !== key) b.hidden = true;
       row.append(b);
     };
-    refs.forEach(r => {
-      const im = el("img"); im.src = `/api/thumb/${r.id}`; im.alt = r.problem;
+    const shown = dir.all || !editable ? refs : refs.slice(0, 8);
+    shown.forEach(r => {
+      const im = el("img"); im.src = `/api/thumb/${r.id}`; im.alt = r.label || r.problem; im.loading = "lazy";
       im.onerror = () => { const tx = el("div", "pc-tx", "…"); tx.title = "The picture could not be rendered; the plan text still counts"; im.replaceWith(tx); };
-      opt(r.id, im, r.problem.slice(0, 60));
+      opt(r.id, im, r.label || r.problem.slice(0, 60));
     });
     opt("surprise", el("div", "pc-tx", "?"), "Surprise me: a distinctive look of its own");
     opt("none", el("div", "pc-tx", "–"), "No direction");
     dir.append(row);
+    if (editable && refs.length > shown.length) { const more = el("button", "mini", `All ${refs.length} looks`); more.type = "button"; more.onclick = () => { dir.all = true; drawDir(); }; dir.append(more); }
   };
   const label = { proposed: "waiting for your approval", approved: "running task by task", rejected: "rejected", replan: "needs a new plan", done: "done", stopped: "stopped" };
   const paint = () => {

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The plan card offers looks instead of similar briefs: one page per art style in the design library (25), the first eight shown, "All 25 looks" for the rest. A Pomodoro timer had been offered a garden dashboard because the search always returns its best hits. The chosen look goes into the task briefings as a hard requirement with the example's subject excluded, since a remote model had ignored the softer wording.
 - Remote models, opt-in: `providers.json` + `.env` add models behind an OpenAI-compatible API (OpenRouter, MiniMax, …) to the model menu as `<provider>/<id> · remote`. The first remote turn in a project asks once and is remembered per project; helper, embeddings and the library stay local. Cost is shown next to the context meter and in `scripts/bench.py` when the provider reports it.
 
 ## 0.2.0 (2026-10-26), first public release

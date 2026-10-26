@@ -139,6 +139,28 @@ async def search(client, url: str, query: str, k: int = 3, language: str = "") -
     return out[:k]
 
 
+LOOK_LABELS = {"inksketch": "Ink sketch", "artdeco": "Art deco", "midcentury": "Mid-century", "stainedglass": "Stained glass",
+               "ukiyoe": "Ukiyo-e", "papercut": "Paper cut", "claymorphism": "Clay", "swiss": "Swiss grid", "pixel": "Pixel art"}
+
+
+def looks() -> list[dict]:
+    """One representative design plan per art style in the library: what a page in that look is like, whatever its subject.
+    The plan card offers these as the direction; the chosen plan's technique, not its content, goes into the briefing."""
+    db = _db()
+    try:
+        rows = db.execute("SELECT id, framework, problem FROM entries WHERE language = 'design-plan' AND extra != '' ORDER BY id").fetchall()
+    finally:
+        db.close()
+    out, seen = [], set()
+    for i, fw, problem in rows:
+        style = fw.split(", ")[-1].strip() if ", " in (fw or "") else ""
+        if not style or style in seen:
+            continue
+        seen.add(style)
+        out.append({"id": i, "style": style, "label": LOOK_LABELS.get(style, style.capitalize()), "problem": problem[:160]})
+    return sorted(out, key=lambda l: l["label"])
+
+
 def get(entry_id: int, full: bool = False) -> dict | None:
     """One entry by id; with full=True the bulk text (the page of a design plan) comes along."""
     db = _db()
