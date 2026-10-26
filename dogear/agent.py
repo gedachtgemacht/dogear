@@ -28,7 +28,6 @@ from .mcp import MCP, MCPError
 # Optional tool modules import dogear.tools, so they are registered here, not inside tools.py.
 for _m in (devtools_code, devtools_run, _ultra_mod, mem, planning, library):
     tools.TOOLS.update(_m.TOOLS)
-tools.SPECS[:] = [t[2] for t in tools.TOOLS.values()]
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 SESSIONS = DATA / "sessions"
@@ -39,7 +38,7 @@ MODES = ("ask", "edit", "auto", "plan")
 READONLY_AGENT = ("Read", "LS", "Glob", "Grep", "WebSearch", "WebFetch", "Outline", "FindSymbol")
 HELPER_MODEL = "qwen3.5:4b"
 
-INSTRUCTION_FILES = (f"{NAME.upper()}.md", "KERF.md", "FALZ.md", "CLAUDE.md", "AGENTS.md")
+INSTRUCTION_FILES = (f"{NAME.upper()}.md", "CLAUDE.md", "AGENTS.md")
 
 SYSTEM = """You are {name}, a coding agent running locally on the user's machine, inside a terminal-style IDE.
 Working directory: {root}
@@ -554,7 +553,8 @@ class Agent:
             for n in prof.notes:
                 if "overridden" not in n:
                     await self.send({"type": "notice", "text": f"{model}: {n}"})
-        profiles.note_issue(model, "runs") if not _review else None
+        if not _review:
+            profiles.note_issue(model, "runs")
         index = list_skills(ctx.root) if prof.skills_index else []
         if index:
             extra += "\nSkills you can load with the Skill tool when the task matches:\n" + "\n".join(
@@ -870,7 +870,8 @@ class Agent:
             await self.send({"type": "error", "text": f"{type(e).__name__}: {e}"})
         finally:
             s["todos"] = ctx.todos
-            self.last_task, self.last_steps = ctx.task_done, nsteps
+            if _task:                                           # the review turn that may follow has no task and must not overwrite this
+                self.last_task, self.last_steps = ctx.task_done, nsteps
             last = not _task or bool(_task.get("last"))      # a plan is reviewed and audited once, after its last task
             gate = ""
             if last and not _review and not cancelled and final_idx is not None and mode != "plan" and any(

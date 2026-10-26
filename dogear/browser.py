@@ -112,7 +112,7 @@ BLOCK_JS = r"""
 
 READ_JS = r"""
 (all) => {
-  const K = window.__kerf = window.__kerf || { n: 0, els: new Map(), ids: new WeakMap() };
+  const K = window.__dogear = window.__dogear || { n: 0, els: new Map(), ids: new WeakMap() };
   const ref = el => { let id = K.ids.get(el); if (!id) { id = "e" + (++K.n); K.ids.set(el, id); K.els.set(id, new WeakRef(el)); } return id; };
   const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD", "META", "LINK", "SVG", "PATH"]);
   const INTER = 'a[href],button,input:not([type=hidden]),select,textarea,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=switch],[role=option],[onclick],[contenteditable=""],[contenteditable=true]';
@@ -173,7 +173,7 @@ READ_JS = r"""
 
 REF_JS = r"""
 (ref) => {
-  const el = window.__kerf && window.__kerf.els.get(ref) && window.__kerf.els.get(ref).deref();
+  const el = window.__dogear && window.__dogear.els.get(ref) && window.__dogear.els.get(ref).deref();
   if (!el || !el.isConnected) return null;
   el.scrollIntoView({ block: "center", inline: "center" });
   const r = el.getBoundingClientRect();

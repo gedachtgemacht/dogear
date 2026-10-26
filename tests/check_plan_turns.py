@@ -1,0 +1,124 @@
+"""Plan execution turns with a fake model (no Ollama): a task closed with complete_current_task stays closed even when
+the quality gate and the review turn run afterwards; request_replan ends the turn; a turn without either call is
+nudged and then logged as unfinished. usage: uv run python tests/check_plan_turns.py"""
+import asyncio
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from dogear import agent as A, checkpoint as cp, llm, memory as mem, profiles  # noqa: E402
+
+ok_all = True
+
+
+def check(name, cond, extra=""):
+    global ok_all
+    ok_all &= bool(cond)
+    print(("PASS " if cond else "FAIL ") + name + (f"  [{extra}]" if extra and not cond else ""))
+
+
+tmp = Path(tempfile.mkdtemp())
+A.SESSIONS = tmp / "sessions"                       # never touch data/
+root = tmp / "proj"
+root.mkdir()
+
+# stubs: no model, no checkpoints, no helpers
+profiles.get_profile = lambda client, model: asyncio.sleep(0, profiles.Profile(model))
+profiles.note_issue = lambda *a, **k: None
+cp.checkpoint = lambda *a, **k: "deadbeef"
+mem.prompt_block = lambda root, text: ("", {"memory": 0, "snippets": 0})
+llm.has_vision = lambda client, model: asyncio.sleep(0, False)
+script: list = []          # what the fake model does, in order: ("call", name, args) | ("text", content)
+
+
+async def fake_stream(client, model, msgs, tools, think, num_ctx):
+    step = script.pop(0) if script else ("text", "nothing more")
+    if step[0] == "call":
+        yield "call", {"function": {"name": step[1], "arguments": step[2]}}
+    else:
+        yield "content", step[1]
+    yield "done", {"eval_count": 1, "prompt_eval_count": 1, "eval_duration": 1e9}
+
+
+llm.stream = fake_stream
+
+
+async def noop(*a, **k):
+    return None
+
+
+A.Agent.sync_mcp = noop
+A.Agent._name = noop
+A.Agent._present = noop
+A.Agent._suggest = noop
+A.Agent._auto_learn = noop
+GATE = {"on": True}
+
+
+async def fake_audit(self, root, changed, model="", brief=""):
+    return "Page: index.html\nHIGH: something measured" if GATE["on"] else ""
+
+
+A.Agent._audit_changed = fake_audit
+
+
+async def run(steps, *, last=True, gate=True, mode="auto"):
+    events = []
+
+    async def send(ev):
+        events.append(ev)
+
+    GATE["on"] = gate
+    ag = A.Agent(send, client=None, browser=None)
+    ag.session = A.new_session(str(root))
+    script[:] = list(steps)
+    await ag.turn("Task 1 of 1: build the page", "m", False, mode, 8192, False, False, None,
+                  _task={"i": 0, "n": 1, "content": "build the page", "last": last})
+    return ag, events
+
+
+async def main():
+    # 1. task closed, then gate + review turn: the outcome survives
+    ag, ev = await run([("call", "Write", {"file_path": "index.html", "content": "<html><body>hi</body></html>"}),
+                        ("call", "complete_current_task", {"summary": "wrote index.html and opened it"}),
+                        ("text", "Review done, nothing to fix.")])
+    check("review turn ran after the last task", any(e["type"] == "review_start" for e in ev))
+    check("the task outcome survives the review turn", (ag.last_task or {}).get("status") == "done", str(ag.last_task))
+    check("the board marks the task completed", all(t["status"] == "completed" for t in ag.session["todos"]) or not ag.session["todos"])
+    names = [e["name"] for e in ev if e["type"] == "tool"]
+    check("complete_current_task was offered and used", "complete_current_task" in names, str(names))
+
+    # 2. not the last task: no gate, no review
+    ag, ev = await run([("call", "Write", {"file_path": "a.html", "content": "<p>x</p>"}),
+                        ("call", "complete_current_task", {"summary": "wrote a.html"})], last=False)
+    check("no review and no gate before the last task", not any(e["type"] == "review_start" for e in ev))
+    check("outcome recorded", (ag.last_task or {}).get("summary") == "wrote a.html")
+
+    # 3. request_replan ends the turn with the reason
+    ag, ev = await run([("call", "request_replan", {"reason": "utils.py already has this function, tasks 2 and 3 are moot"})], gate=False)
+    check("request_replan ends the turn", (ag.last_task or {}).get("status") == "replan")
+    check("the reason is kept", "utils.py" in (ag.last_task or {}).get("reason", ""))
+
+    # 4. prose instead of a closing call: nudged, then unfinished
+    ag, ev = await run([("text", "I think that is all."), ("text", "Done I guess."), ("text", "Really done.")], gate=False)
+    check("a task turn without a closing call is logged as unfinished", ag.last_task is None)
+    nudges = [m for m in ag.session["messages"] if m.get("review") and "complete_current_task" in m.get("content", "")]
+    check("the model was nudged to close the task (twice)", len(nudges) == 2, str(len(nudges)))
+
+    # 5. outside plan execution the closing tools do not exist for the model
+    events = []
+
+    async def send(ev):
+        events.append(ev)
+    ag = A.Agent(send, client=None, browser=None)
+    ag.session = A.new_session(str(root))
+    script[:] = [("call", "complete_current_task", {"summary": "sneaky"}), ("text", "ok")]
+    await ag.turn("just a normal request", "m", False, "auto", 8192, False, False, None)
+    res = next((e for e in events if e["type"] == "result"), None)
+    check("complete_current_task outside a plan run is rejected", res is not None and not res["ok"], str(res)[:120])
+
+
+asyncio.run(main())
+print("ALL PASS" if ok_all else "SOME FAILED")
+sys.exit(0 if ok_all else 1)

@@ -52,5 +52,6 @@ check("execution tools are not in the planning toolbox", not any(n in planning.P
 check("the execution prompt tells the model how a task turn ends", "complete_current_task" in planning.EXEC_PROMPT and "request_replan" in planning.EXEC_PROMPT)
 check("Agent.run_plan exists", callable(getattr(agent.Agent, "run_plan", None)))
 
+
 print("ALL PASS" if ok_all else "SOME FAILED")
 sys.exit(0 if ok_all else 1)

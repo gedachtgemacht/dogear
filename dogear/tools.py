@@ -746,7 +746,6 @@ TOOLS = {
     "browser_wait": ("browser", browser_wait, _spec("browser_wait", "Wait for the page to settle (max 10 seconds).",
         {"seconds": _p(I, "seconds")}, [])),
 }
-SPECS = [t[2] for t in TOOLS.values()]
 
 SAFE_CMDS = {"ls", "cat", "head", "tail", "wc", "pwd", "echo", "grep", "rg", "tree", "file", "stat", "du", "date", "which", "node", "python3", "python"}
 SAFE_VERSION = {"--version", "-v", "-V", "-version"}
