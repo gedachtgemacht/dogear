@@ -101,7 +101,7 @@ const S = {
   // the workspace
   changed: new Map(), flash: new Set(), openDirs: new Set(), follow: true, webTouched: false,
   // the composer
-  mode: "edit", hist: [], hi: 0, t0: 0, tok: 0,
+  mode: "edit", hist: [], hi: 0, t0: 0, tok: 0, cost: 0,
   variants: false,                                   // settings: offer parallel variants
 };
 const log = $("#log");

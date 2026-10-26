@@ -1,8 +1,10 @@
-"""Streaming client for the local Ollama server."""
+"""Streaming client for the local Ollama server; remote models (remote.py) answer through the same generator."""
 import asyncio
 import json
 
 import httpx
+
+from . import remote
 
 URL = "http://127.0.0.1:11434"
 STALL_SECONDS = 150   # a stream that goes silent this long is considered dead (first token of a big prompt included)
@@ -15,11 +17,20 @@ class LLMError(Exception):
 async def models(client: httpx.AsyncClient) -> list[str]:
     r = await client.get(f"{URL}/api/tags", timeout=5)
     names = [m["name"] for m in r.json().get("models", [])]
-    return sorted(n for n in names if "embed" not in n)
+    return sorted(n for n in names if "embed" not in n) + remote.model_names()
 
 
 async def stream(client, model, messages, tools, think, num_ctx):
-    """Yields ('thinking'|'content'|'call'|'done', payload)."""
+    """Yields ('thinking'|'content'|'call'|'done', payload). A model named <provider>/<id> from providers.json is
+    streamed from that provider (OpenAI-compatible API); everything else from Ollama."""
+    sp = remote.split(model)
+    if sp:
+        try:
+            async for ev in remote.stream(client, *sp, messages, tools, think, tuned=getattr(client, "tune_remote", None)):
+                yield ev
+        except remote.RemoteError as e:
+            raise LLMError(str(e)) from e
+        return
     body = {
         "model": model,
         "messages": messages,
@@ -61,6 +72,9 @@ _vision: dict[str, bool] = {}
 
 
 async def has_vision(client: httpx.AsyncClient, model: str) -> bool:
+    info = remote.model_info(model)
+    if info:
+        return bool(info.get("vision"))
     if model not in _vision:
         try:
             r = await client.post(f"{URL}/api/show", json={"model": model}, timeout=10)

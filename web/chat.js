@@ -298,6 +298,21 @@ function askBox(m) {
   box.querySelector(".opt")?.focus();
 }
 
+/* the first remote turn in a project: what the agent reads there leaves the machine, so the user decides once per project */
+function remoteBox(m) {
+  const t = turn(), box = el("div", "ask remote");
+  box.append(el("p", "", `Send this project to ${m.provider}?`));
+  box.append(el("div", "why", `${baseName(m.root)} is new to remote models. Everything the agent reads there (files, command output, screenshots) is sent to ${m.host} while this model is selected. Nothing was sent yet.`));
+  const o = el("div", "opts");
+  const yes = el("button"); yes.type = "button"; yes.append(el("kbd", "", "1"), "Yes, allow it for this project");
+  yes.onclick = () => { box.remove(); setBusy(true); setStatus(t, "working", {}); sendWS({ type: "remote_allow", root: m.root, msg: m.msg }); };
+  const no = el("button"); no.type = "button"; no.append(el("kbd", "", "2"), "No, pick a local model");
+  no.onclick = () => { box.remove(); noticeLine(t, "Not sent. Choose a local model and send the message again."); };
+  o.append(yes, no); box.append(o);
+  t.work.append(box); t.work.classList.add("live"); t.status.hidden = true;
+  box.querySelector("button")?.focus();
+}
+
 function approvalBox(m) {
   const box = el("div", "ask"), a = m.args, mcp = m.name.startsWith("mcp__");
   const host = (() => { try { return new URL(/^[a-z]+:/i.test(a.url || "") ? a.url : "https://" + (a.url || "")).hostname; } catch { return ""; } })();

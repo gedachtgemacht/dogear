@@ -77,6 +77,7 @@ class TurnStats:
     abort: bool = False
     reason: str = ""
     prompt_tokens: int = 0                             # the largest prompt the model saw in this turn
+    cost: float = 0.0                                  # what a remote provider charged for this turn, when it says
     flows: dict | None = None                          # the recorded check flows replayed by the gate
 
 
@@ -637,8 +638,11 @@ class Agent:
                 st.prompt_tokens = max(st.prompt_tokens, int(done.get("prompt_eval_count", 0) or 0))
                 if ev >= 40:                                 # short answers measure nothing but latency
                     profiles.note_tps(cfg.model, ev / max(done.get("eval_duration", 1) / 1e9, 0.001))
+                if done.get("cost"):
+                    st.cost += float(done["cost"])
                 await self.send({"type": "usage", "prompt": done.get("prompt_eval_count", 0), "out": ev,
-                                 "tps": round(ev / max(done.get("eval_duration", 1) / 1e9, 0.001), 1), "ctx": cfg.num_ctx})
+                                 "tps": round(ev / max(done.get("eval_duration", 1) / 1e9, 0.001), 1), "ctx": cfg.num_ctx,
+                                 "cost": done.get("cost"), "remote": done.get("remote", "")})
                 if not calls:
                     if await self._nudge(ctx, s, st, content, cfg, _review, _task):
                         continue
@@ -1051,6 +1055,7 @@ class Agent:
             visited = [x for x in st.sources if x["kind"] == "visited"]
             others = [x for x in st.sources if x["kind"] != "visited"]
             summary = {"steps": st.nsteps, "secs": round(time.time() - st.t0), "sources": (visited + others)[:8],
+                       **({"cost": round(st.cost, 4)} if st.cost else {}),
                        "changes": [{"path": p, **v} for p, v in st.changes.items()], "commands": st.commands[-8:],
                        "receipt": self._receipt(st, cancelled or st.abort)}
             if self._cp.get("before") and (st.changes or st.commands):

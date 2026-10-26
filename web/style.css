@@ -59,6 +59,8 @@ select:focus { border-color: var(--accent); }
 .meter .bar-bg { width: 54px; height: 4px; background: var(--panel3); border-radius: 2px; overflow: hidden; }
 .meter i { display: block; height: 100%; width: 0; background: var(--ink2); transition: width .4s; }
 .meter i.warn { background: var(--accent); } .meter i.hot { background: var(--bad); }
+.cost { font: 11.5px var(--mono); color: var(--mute); padding: 0 6px; }
+.ask.remote p { font-weight: 600; } .ask.remote .why { margin: 0 0 10px; color: var(--ink2); font-size: 12.5px; }
 .icon { border: 0; background: var(--panel); color: var(--ink2); width: 30px; height: 30px; border-radius: 6px; cursor: pointer; display: grid; place-items: center; }
 .icon:hover { color: var(--ink); }
 

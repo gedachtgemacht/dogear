@@ -9,3 +9,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.log
+# API keys for remote models (providers.json): never committed
+.env
+providers.json

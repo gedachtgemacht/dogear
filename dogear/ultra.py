@@ -106,17 +106,24 @@ def parse_where(where: str) -> tuple[str, int] | None:
 
 
 class _Tuned:
-    """Facade over the httpx client: llm.stream builds the request, this sets temperature, token cap and `format`."""
+    """Facade over the httpx client: llm.stream builds the request, this sets temperature, token cap and `format`,
+    in Ollama's shape or, through `tune_remote`, in the OpenAI shape a remote provider expects."""
 
     def __init__(self, client, fmt=None):
         self.client, self.fmt = client, fmt
 
-    def stream(self, method, url, json=None, timeout=None):
+    def stream(self, method, url, json=None, timeout=None, **kw):
         body = dict(json)
-        body["options"] = {**body.get("options", {}), "temperature": TEMPERATURE, "num_predict": NUM_PREDICT}
+        if url.endswith("/api/chat"):
+            body["options"] = {**body.get("options", {}), "temperature": TEMPERATURE, "num_predict": NUM_PREDICT}
+            if self.fmt:
+                body["format"] = self.fmt
+        return self.client.stream(method, url, json=body, timeout=timeout, **kw)
+
+    def tune_remote(self, body: dict):
+        body["temperature"], body["max_tokens"] = TEMPERATURE, NUM_PREDICT
         if self.fmt:
-            body["format"] = self.fmt
-        return self.client.stream(method, url, json=body, timeout=timeout)
+            body["response_format"] = {"type": "json_schema", "json_schema": {"name": "answer", "schema": self.fmt}}
 
 
 FINDINGS_SCHEMA = {"type": "object", "required": ["findings"], "properties": {"findings": {"type": "array", "items": {

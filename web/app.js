@@ -23,12 +23,14 @@ const ON = {
   profile(m) {
     const o = [...$("#model").options].find(x => x.value === m.model);
     const caps = [m.tools ? "tools" : "no tools", m.vision ? "vision" : null, m.thinking ? "reasoning" : null].filter(Boolean).join(", ");
-    if (o) o.title = `${m.params_b ? m.params_b.toFixed(1) + "B parameters" : "size unknown"}${m.moe ? " (MoE)" : ""}\ntoolbox: ${m.toolbox}, prompt: ${m.prompt}\n${caps}${m.notes.length ? "\n" + m.notes.join("\n") : ""}`;
+    const size = m.remote ? `remote model via ${m.remote} (${m.host})` : `${m.params_b ? m.params_b.toFixed(1) + "B parameters" : "size unknown"}${m.moe ? " (MoE)" : ""}`;
+    if (o) o.title = `${size}\ntoolbox: ${m.toolbox}, prompt: ${m.prompt}\n${caps}${m.notes.length ? "\n" + m.notes.join("\n") : ""}`;
     $("#model").title = o ? o.title : "";
   },
   approval(m) { approvalBox(m); },
   approval_done() { const t = S.turns.find(x => x.st.state === "waiting") || S.turn; S.ask = null; if (t && t.st.state === "waiting") waitingDone(t); },
   ask(m) { askBox(m); },
+  remote_ask(m) { remoteBox(m); },
   sub(m) { const c = S.cards[m.id]; if (c) { c.tb.append(el("div", "subline", m.text)); } },
   result(m) {
     const c = S.cards[m.id]; if (!c) return;
@@ -56,7 +58,8 @@ const ON = {
     S.tok += m.out; const pct = m.prompt / m.ctx, i = $("#meter i"); $("#meter").classList.add("on");
     i.style.width = Math.min(100, pct * 100) + "%"; i.className = pct > .85 ? "hot" : pct > .6 ? "warn" : "";
     $("#meter b").textContent = pct > .6 ? `${Math.round(pct * 100)} %` : "";
-    $("#meter").title = `Context: ${(m.prompt / 1000).toFixed(1)}k of ${m.ctx / 1024}k tokens · ${m.tps} tokens/s`;
+    $("#meter").title = `Context: ${(m.prompt / 1000).toFixed(1)}k of ${m.ctx / 1024}k tokens · ${m.tps} tokens/s${m.remote ? ` · via ${m.remote}` : ""}`;
+    if (m.cost) { S.cost += m.cost; $("#cost").textContent = `$${S.cost < 0.01 ? S.cost.toFixed(4) : S.cost.toFixed(3)}`; $("#cost").hidden = false; }
   },
   summary(m) { const t = S.turns[m.user_idx] || S.turn; if (t) { if (S.cur && t === S.turn) t.raw = S.curText; applySummary(t, m); } },
   review_start() {
@@ -264,7 +267,7 @@ async function refresh() {
   if (!sel.options.length) {
     const pf = S.st.profiles || {};
     for (const m of models.includes(c.model) ? models : [c.model, ...models]) {
-      const o = new Option(m, m); o.title = [pf[m]?.label, ...(pf[m]?.notes || [])].filter(Boolean).join("\n"); sel.append(o);
+      const o = new Option(pf[m]?.remote ? `${m} · remote` : m, m); o.title = [pf[m]?.label, ...(pf[m]?.notes || [])].filter(Boolean).join("\n"); sel.append(o);
     }
     sel.value = c.model; $("#think").checked = c.think; $("#review").checked = c.review !== false; $("#ctx").value = String(c.num_ctx); $("#root").value = S.root = c.root; setMode(c.mode, false);
   }

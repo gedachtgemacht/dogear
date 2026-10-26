@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Remote models, opt-in: `providers.json` + `.env` add models behind an OpenAI-compatible API (OpenRouter, MiniMax, …) to the model menu as `<provider>/<id> · remote`. The first remote turn in a project asks once and is remembered per project; helper, embeddings and the library stay local. Cost is shown next to the context meter and in `scripts/bench.py` when the provider reports it.
+
 ## 0.2.0 (2026-10-26), first public release
 
 - Repository reorganised for readers: `dogear/` (package), `web/` (UI), `skills/`, `scripts/` (benchmark, calibration, screenshots, run a task), `tests/` (pytest entry, check scripts, live end-to-end scripts, fixtures). Benchmark results moved out of the tree into `data/bench/`.

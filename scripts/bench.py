@@ -1,6 +1,7 @@
-"""Benchmark local models on small coding tasks with automatic grading.
+"""Benchmark models on small coding tasks with automatic grading.
 
-usage: uv run python scripts/bench.py [model ...]      (default: all chat models in Ollama)
+usage: uv run python scripts/bench.py [model ...]      (default: all chat models in Ollama; a remote model from
+       providers.json is named like in the UI, e.g. openrouter/minimax/minimax-m3.1-flash)
 Results: data/bench/bench_results.json (appended per run) and a table at the end.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
@@ -235,8 +236,12 @@ async def run_agent(model, d, prompt):
             t = m["type"]
             if t == "tool": stats["steps"] += 1
             elif t == "result" and not m["ok"]: stats["tool_errors"] += 1
-            elif t == "usage": stats["tps"].append(m["tps"])
+            elif t == "usage":
+                stats["tps"].append(m["tps"])
+                if m.get("cost"): stats["cost"] = round(stats.get("cost", 0) + m["cost"], 4)
             elif t == "error": stats["error"] = m["text"][:80]
+            elif t == "remote_ask":                      # the benchmark directory may be sent to the provider
+                await ws.send(json.dumps({"type": "remote_allow", "root": m["root"], "msg": m["msg"]})); continue
             elif t == "plan_proposed": plan = m["plan"]; stats["plan_tasks"] = len(plan["tasks"]); stats["plan_secs"] = int(time.time() - t0)
             elif t == "done":
                 if PHASED and plan and not approved:        # phase 1 finished: approve the board unchanged and run it
@@ -272,7 +277,7 @@ async def main():
                     st, score, note = {"secs": 0, "steps": 0, "tool_errors": 0, "tps": 0, "error": str(e)[:60]}, 0.0, "grader/run failed"
                 row = {"model": model, "task": name, "score": score, "note": note, **st}
                 results.append(row); RESULTS.parent.mkdir(parents=True, exist_ok=True); RESULTS.write_text(json.dumps(results, indent=1))
-                print(f"{model:<22} {name:<13} score={score:.1f}  {st['secs']:>3}s  steps={st['steps']:<2} errs={st['tool_errors']} tps={st['tps']:<5} {note} {st['error']}", flush=True)
+                print(f"{model:<22} {name:<13} score={score:.1f}  {st['secs']:>3}s  steps={st['steps']:<2} errs={st['tool_errors']} tps={st['tps']:<5}{(' $' + str(st['cost'])) if st.get('cost') else ''} {note} {st['error']}", flush=True)
     finally:
         if saved is not None:
             cfg_file.write_text(saved)

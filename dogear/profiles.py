@@ -14,6 +14,7 @@ from pathlib import Path
 
 import httpx
 
+from . import remote
 from .llm import URL
 
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -52,10 +53,14 @@ class Profile:
     planning: bool = True                # mandate TodoWrite for multi-step work
     skills_index: bool = True
     review: bool = True                  # default for the automatic review pass
+    remote: str = ""                     # provider name for a model that runs outside this machine, else ""
+    host: str = ""                       # where a remote model's requests go
     notes: list[str] = field(default_factory=list)
 
     @property
     def label(self) -> str:
+        if self.remote:
+            return f"remote via {self.remote} · {self.toolbox}"
         size = f"{self.params_b:.0f}B" if self.params_b and self.params_b >= 10 else (f"{self.params_b:.1f}B" if self.params_b else "?")
         return f"{size}{' MoE' if self.moe else ''} · {self.toolbox}"
 
@@ -161,10 +166,27 @@ def _apply_overrides_and_stats(p: Profile) -> Profile:
     return p
 
 
+def _from_remote(model: str, info: dict) -> Profile:
+    """A remote model is taken at its word: frontier size, full toolbox, the capabilities providers.json states."""
+    p = Profile(model=model, params_b=info.get("params_b"), active_b=info.get("active_b"), moe=bool(info.get("moe")),
+                ctx_max=int(info.get("ctx") or 0) or None, family=info.get("family", ""), tools=bool(info.get("tools", True)),
+                vision=bool(info.get("vision")), thinking=bool(info.get("thinking", True)), tier="large", toolbox="full",
+                prompt="full", remote=info["provider"], host=info["host"])
+    p.notes.append(f"remote model: everything the agent reads is sent to {info['host']}")
+    if not p.tools:
+        p.notes.append("model does not advertise tool calling: running as plain chat")
+    return p
+
+
 async def get_profile(client: httpx.AsyncClient, model: str, ttl: float = 300) -> Profile:
     hit = _cache.get(model)
     if hit and time.time() - hit[0] < ttl:
         return hit[1]
+    info = remote.model_info(model)
+    if info:
+        p = _apply_overrides_and_stats(_from_remote(model, info))
+        _cache[model] = (time.time(), p)
+        return p
     try:
         r = await client.post(f"{URL}/api/show", json={"model": model}, timeout=10)
         r.raise_for_status()
@@ -195,7 +217,8 @@ async def list_profiles(client: httpx.AsyncClient) -> list[Profile]:
         p = await get_profile(client, m["name"])
         if not p.embedding:
             out.append(p)
-    return sorted(out, key=lambda p: p.model)
+    out.sort(key=lambda p: p.model)
+    return out + [await get_profile(client, name) for name in remote.model_names()]     # remote models last, local first
 
 
 PREFERRED_HELPER = "qwen3.5:4b"
@@ -205,7 +228,7 @@ async def pick_helper(client: httpx.AsyncClient, avoid: str = "") -> str | None:
     """The model for small side jobs (titles, structure, suggestions, sub-agents).
     The preferred helper (data/profiles.json key "_helper", default qwen3.5:4b) wins when it is installed and not the
     model already in use; otherwise the smallest installed tool-capable chat model of at least 2.5B."""
-    ps = [p for p in await list_profiles(client) if p.tools]
+    ps = [p for p in await list_profiles(client) if p.tools and not p.remote]     # side jobs never leave the machine
     pref = _load_json(OVERRIDES_FILE).get("_helper") or PREFERRED_HELPER
     if any(p.model == pref for p in ps) and pref != avoid:
         return pref

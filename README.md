@@ -6,7 +6,7 @@
 
 A coding agent that runs on your own machine, with a workspace you can watch, and a receipt for every run.
 
-dogear talks to a local model through [Ollama](https://ollama.com), gives it the tools a coding agent needs (read, write, edit, search, shell, tests, git, a real browser), and shows you what it does while it does it: files being typed, diffs, the terminal, and a live browser that you and the agent share. Nothing leaves your machine unless the agent opens a web page.
+dogear talks to a local model through [Ollama](https://ollama.com), gives it the tools a coding agent needs (read, write, edit, search, shell, tests, git, a real browser), and shows you what it does while it does it: files being typed, diffs, the terminal, and a live browser that you and the agent share. Nothing leaves your machine unless the agent opens a web page, or you choose a remote model for a project (see [Remote models](#remote-models)).
 
 <p align="center">
   <img src="docs/screenshots/run.png" width="820" alt="A finished run: the status block says Verified, with the page audit and console rows of the receipt, then the answer">
@@ -82,6 +82,17 @@ dogear works with every Ollama model that supports tool calls. On a laptop with 
 
 Models with vision get screenshots; models without are told they cannot see the attached image. `scripts/calibrate.py MODEL` measures which toolbox size a new model handles best and records it.
 
+### Remote models
+
+Local first, remote by choice. A model behind an OpenAI-compatible API (OpenRouter, MiniMax, Groq, Together, …) can be added next to the Ollama models:
+
+```bash
+cp providers.example.json providers.json     # which providers and models; both files are gitignored
+echo 'OPENROUTER_API_KEY=sk-or-…' > .env     # the key, read from .env or the environment, written nowhere else
+```
+
+The model then appears in the menu as `openrouter/minimax/minimax-m3.1-flash · remote`. The first time you use it in a project, dogear asks once: everything the agent reads there (files, command output, screenshots) is sent to the provider while that model is selected. The answer is remembered per project in `data/settings.json`. The helper model, embeddings and the design library always stay local. What the provider charges is shown next to the context meter when it reports it (OpenRouter does), and in the benchmark table: `uv run python scripts/bench.py qwen3.6:35b-a3b openrouter/minimax/minimax-m3.1-flash` runs the same tasks on both.
+
 ### Project instructions
 
 If the project root contains a `DOGEAR.md` (also `CLAUDE.md` or `AGENTS.md`), its content goes into the system prompt. `/init` asks the agent to write one.
@@ -122,7 +133,8 @@ dogear/          the Python package
   ultra.py       a multi-agent orchestrator (kept, not offered to the model)
   mcp.py         MCP client, stdio and Streamable HTTP
   learning.py    what a run teaches the library, and when that is taken back
-  llm.py         streaming client for Ollama
+  llm.py         streaming client for Ollama; hands <provider>/<id> names to remote.py
+  remote.py      remote models over an OpenAI-compatible API (providers.json, .env), opt-in per project
 web/             the UI: index.html, style.css and six plain scripts (core, sidebar, chat, workspace, board, app)
 skills/          built-in skills (skills/extra: more, not loaded by default)
 scripts/         benchmark, calibration, design benchmark, screenshots, run a task from the shell

@@ -20,7 +20,7 @@ from . import agent as A
 from . import browser as br
 from . import checkpoint as cpt
 from . import worktrees as W
-from . import llm, profiles, tools
+from . import llm, profiles, remote, tools
 from . import memory as mem
 from . import library, learning, flows
 from .brand import NAME
@@ -403,7 +403,27 @@ async def on_user(c: Conn, m: dict):
         await c.send({"type": "error", "text": f"Project directory does not exist: {c.cfg['root']}"})
         await c.send({"type": "done"})
         return
+    info = remote.model_info(c.cfg["model"])
+    if info and not remote_allowed(c.cfg["root"]):
+        # the first remote turn in a project is a decision: what the agent reads there is sent to the provider
+        await c.send({"type": "remote_ask", "provider": info["provider"], "host": info["host"], "root": c.cfg["root"], "msg": m})
+        await c.send({"type": "done"})
+        return
     c.start_turn(m["text"], None, [i for i in m.get("images", []) if isinstance(i, str)][:4])
+
+
+def remote_allowed(root: str) -> bool:
+    return str(Path(root).resolve()) in settings().get("remote_roots", [])
+
+
+@handler("remote_allow")
+async def on_remote_allow(c: Conn, m: dict):
+    """The user allowed remote models for a project; remembered in settings.json, then the held message is sent."""
+    root = str(Path(m.get("root") or c.cfg["root"]).resolve())
+    c.cfg["remote_roots"] = sorted(set(settings().get("remote_roots", [])) | {root})
+    SETTINGS.write_text(json.dumps(c.cfg))
+    if isinstance(m.get("msg"), dict) and m["msg"].get("text"):
+        await on_user(c, m["msg"])
 
 
 @handler("plan_approve")
