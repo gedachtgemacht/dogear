@@ -9,7 +9,7 @@ A coding agent that runs on your own machine, with a workspace you can watch, an
 dogear talks to a local model through [Ollama](https://ollama.com), gives it the tools a coding agent needs (read, write, edit, search, shell, tests, git, a real browser), and shows you what it does while it does it: files being typed, diffs, the terminal, and a live browser that you and the agent share. Nothing leaves your machine unless the agent opens a web page.
 
 <p align="center">
-  <img src="docs/screenshots/session.png" width="820" alt="A finished run: the status block says Verified, with the page audit and console rows of the receipt, then the answer">
+  <img src="docs/screenshots/run.png" width="820" alt="A finished run: the status block says Verified, with the page audit and console rows of the receipt, then the answer">
 </p>
 
 ## What it does
@@ -31,11 +31,11 @@ dogear talks to a local model through [Ollama](https://ollama.com), gives it the
 - **Context care.** `/compact` condenses the conversation into a briefing; it happens automatically when the context window is 70 % full. Images can be attached, pasted or dropped.
 
 <p align="center">
-  <img src="docs/screenshots/workspace.png" width="820" alt="The workspace open next to the chat: the live browser shows the page the agent is building">
+  <img src="docs/screenshots/browser.png" width="820" alt="The workspace open next to the chat: the live browser shows the page the agent is building">
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/plan.png" width="820" alt="Plan first: the approved board, carried out one task per turn, each task closed by the model with a one-line summary">
+  <img src="docs/screenshots/plan-flow.png" width="820" alt="Plan first: the approved board, carried out one task per turn, each task closed by the model with a one-line summary">
 </p>
 
 ## Quick start

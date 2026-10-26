@@ -13,6 +13,9 @@ from pathlib import Path
 
 import httpx
 
+from dataclasses import dataclass, field
+import logging
+
 from . import browser as br, llm, tools
 from . import present as pres
 from . import checkpoint as cp
@@ -37,6 +40,50 @@ MAX_STEPS = 80
 MODES = ("ask", "edit", "auto", "plan")
 READONLY_AGENT = ("Read", "LS", "Glob", "Grep", "WebSearch", "WebFetch", "Outline", "FindSymbol")
 HELPER_MODEL = "qwen3.5:4b"
+log = logging.getLogger("dogear")
+
+
+@dataclass
+class RunConfig:
+    """What the UI chose for a run."""
+    model: str
+    think: bool
+    mode: str          # ask | edit | auto | plan
+    num_ctx: int
+    review_on: bool = False
+
+
+@dataclass
+class TurnStats:
+    """What one run collects while it works: the material for the summary and the receipt, and the counters the guards use.
+    The self-check pass continues the same object."""
+    t0: float
+    text: str                                          # the original request (not the review prompt)
+    nsteps: int = 0
+    sources: list = field(default_factory=list)
+    changes: dict = field(default_factory=dict)        # path -> {added, removed, created}
+    commands: list = field(default_factory=list)
+    tools: set = field(default_factory=set)
+    tests: list = field(default_factory=list)          # one bool per RunTests call: green or not
+    test_last: dict | None = None                      # counts of the last RunTests call
+    page: dict | None = None                           # the audit of the page, before and after the fix pass
+    shot: str | None = None                            # a screenshot to show the model on the next step
+    recent: list = field(default_factory=list)         # signatures of the last tool calls (repetition guard)
+    probes: int = 0                                    # diagnostic steps since the last edit (stagnation guard)
+    consec: int = 0                                    # failing tool calls in a row
+    nudges: int = 0                                    # how often the model was pushed to call a tool
+    plan_asked: int = 0                                # the plan gate fires once
+    held: tuple | None = None                          # code the model pasted into the chat (salvaged into a file)
+    abort: bool = False
+    reason: str = ""
+
+
+def _call_parts(c: dict) -> tuple[str, dict]:
+    fn = c["function"]
+    args = fn.get("arguments") or {}
+    if isinstance(args, str):
+        args = json.loads(args or "{}")
+    return fn["name"], args
 # Registered but not offered to the model: the multi-agent runner and the snippet-learning tools add surface that
 # local models rarely use well. Notes (Remember/Recall) and the design-plan library stay.
 CUT_TOOLS = {"Ultra", "SaveSnippet", "SaveSkill", "Forget"}
@@ -333,6 +380,7 @@ class Agent:
         self.mirror = None
         self.asks: dict[str, asyncio.Future] = {}
         self._cp: dict = {}
+        self._carry: TurnStats | None = None       # the run's statistics while its self-check pass runs
         self.last_task, self.last_steps = None, 0   # outcome of the last task turn (phase 3)
         self.mode = "edit"                           # the live permission mode; the UI may change it while a turn runs
 
@@ -516,34 +564,21 @@ class Agent:
 
     # -- one user turn ---------------------------------------------------------
     async def turn(self, text: str, model: str, think: bool, mode: str, num_ctx: int, review_on: bool = False, _review: bool = False, images: list | None = None,
-               _task: dict | None = None):
-        """One user turn. _task is set by run_plan: {i, n, content, last} while an approved board is carried out."""
+                   _task: dict | None = None):
+        """One user turn: prompt -> model -> tool calls -> permissions -> results -> model, until the model answers without tools.
+
+        _review: the self-check pass that may follow a run (same stats, no new checkpoint).
+        _task: set by run_plan while an approved board is carried out: {i, n, content, last}.
+        The pieces, in order: _build_system, _toolbox, _call_model, _nudge, _run_tool, _guard, _record, _finish."""
+        cfg = RunConfig(model, think, mode, num_ctx, review_on)
         s = self.session
-        if mode != "plan":
-            self.mode = mode
-        ctx = tools.Ctx(Path(s["root"]), self.send, self.procs, self.browser)
-        ctx.todos = s.get("todos", [])
-        if not _review and _approx_tokens(_wire(s["messages"])) > int(num_ctx * 0.7):
-            try:
-                r = await self.compact(model, num_ctx)
-                await self.send({"type": "compacted", "session": s, "auto": True, **r})
-            except Exception as e:
-                await self.send({"type": "notice", "text": f"Could not compact automatically: {e}"})
-        ctx.subagent = lambda d, p, f: self._subagent(ctx, d, p, f, model, num_ctx)
-        ctx.skill = lambda n: self._skill(n, ctx.root)
-        ctx.library = lambda q, k: library.search(self.client, llm.URL, q, k)
-        ctx.ultra = lambda pattern, task, scope: self._ultra(ctx, model, num_ctx, pattern, task, scope)
-        ctx.ask_user = lambda qs: self._ask_user(ctx.call_id, qs)
-        names = []
-        for b in (images or [])[:4]:
-            try:
-                names.append(save_image(b))
-            except Exception as e:
-                await self.send({"type": "notice", "text": f"Image skipped: {e}"})
-        if names and not await llm.has_vision(self.client, model):
-            await self.send({"type": "notice", "text": f"{model} cannot see images; they are ignored for this run. Pick a vision model."})
-            names = []
-        s["messages"].append({"role": "user", "content": text, "mode": mode, **({"imgs": names} if names else {}), **({"review": True} if _review else {}),
+        if cfg.mode != "plan":
+            self.mode = cfg.mode
+        ctx = self._new_ctx(cfg)
+        if not _review:
+            await self._auto_compact(cfg)
+        names = await self._save_images(images, cfg.model)
+        s["messages"].append({"role": "user", "content": text, "mode": cfg.mode, **({"imgs": names} if names else {}), **({"review": True} if _review else {}),
                               **({"task": {"i": _task["i"], "n": _task["n"], "content": _task["content"]}} if _task else {})})
         if s["title"] == "New session" and not _review:
             s["title"] = text.strip().splitlines()[0][:48]
@@ -552,299 +587,81 @@ class Agent:
         if self.mirror:
             await self.mirror({"type": "turn_start", "session": s})
 
-        extra = ""
-        for name in INSTRUCTION_FILES:
-            f = ctx.root / name
-            if f.is_file():
-                extra = f"\nProject instructions ({name}):\n{f.read_text()[:6000]}\n"
-                break
-        browser_hint = ""
-        if re.search(r"\b(google|googl\w*|bing|youtube|im browser|in the browser|im internet|open (the )?(site|page|website))\b", text, re.I):
-            browser_hint = ("\nThe user explicitly wants this done in the browser. Do NOT use WebSearch for it: open the site with "
-                            "browser_navigate (for Google: https://www.google.com/search?q=<url-encoded query>), read the page with "
-                            "browser_read, and call browser_handoff if a CAPTCHA or bot check appears.\n")
-        prof = await profiles.get_profile(self.client, model)
+        prof = await profiles.get_profile(self.client, cfg.model)
         await self.send({"type": "profile", **prof.summary()})
-        if prof.notes:
-            for n in prof.notes:
-                if "overridden" not in n:
-                    await self.send({"type": "notice", "text": f"{model}: {n}"})
+        for n in prof.notes:
+            if "overridden" not in n:
+                await self.send({"type": "notice", "text": f"{cfg.model}: {n}"})
         if not _review:
-            profiles.note_issue(model, "runs")
-        index = list_skills(ctx.root) if prof.skills_index else []
-        if index:
-            extra += "\nSkills you can load with the Skill tool when the task matches:\n" + "\n".join(
-                f"- {k['name']}: {k['description']}" for k in index) + "\n"
-        notes, counts = mem.prompt_block(ctx.root, text)
-        extra += notes
-        if counts["memory"] or counts["snippets"]:
-            await self.send({"type": "notice", "text": f"Memory: {counts['memory']} notes, {counts['snippets']} snippets"})
-        if mode == "plan":
-            extra += planning.PLAN_PROMPT
-            try:                                          # proven solutions go into the planning phase without relying on the model to ask
-                hits = await library.search(self.client, llm.URL, text, 3)
-            except Exception:
-                hits = []
-            if hits:
-                extra += ("\nProven solutions from earlier runs the user rated as good (reuse them where they fit; library_search finds more):\n"
-                          + library.format_hits(hits)[:5000] + "\n")
-                await self.send({"type": "notice", "text": f"Library: {len(hits)} matching solution{'s' if len(hits) != 1 else ''}"})
-            if prof.thinking:
-                think = True                              # the planning phase thinks, even if the user switched it off
-        if _task:
-            extra += planning.EXEC_PROMPT
-        if s.get("todos"):
-            mark = {"completed": "[x]", "in_progress": "[~]", "pending": "[ ]"}
-            extra += "\nCurrent task list (the user may have edited it; keep it in sync with TodoWrite):\n" + "\n".join(
-                f"- {mark.get(t.get('status'), '[ ]')} {t.get('content', '')}" for t in s["todos"]) + "\n"
-        skills, skill_names = load_skills(text, ctx.root)
-        if skill_names:
-            await self.send({"type": "notice", "text": "Skills: " + ", ".join(skill_names)})
-        if mode != "plan" and "web-design" in skill_names:
-            try:                                          # reference designs for page briefs: direction, not templates
-                refs = [h for h in await library.search(self.client, llm.URL, text, 2, "design-plan")]
-            except Exception:
-                refs = []
-            if refs:
-                skills += ("\nDesign plans of similar solved briefs (for direction: how they avoid the default look; do not copy them; "
-                           "library_search with full=true returns a complete reference page):\n" + library.format_hits(refs)[:4000] + "\n")
-                await self.send({"type": "notice", "text": f"Design references: {len(refs)}"})
-        sys_tpl = SYSTEM
-        drop = []
-        if prof.prompt == "lean" or not prof.planning:
-            drop += ["TodoWrite"]
-        if prof.prompt == "lean":
-            drop += ["Task tool", "Skill tool", "Memory tool"]
-        if drop:
-            sys_tpl = "\n".join(l for l in SYSTEM.split("\n") if not any(d in l for d in drop))
-        br.PREVIEW_ROOTS[s["id"]] = str(ctx.root)
-        ctx.run_id = s["id"]
-        system = sys_tpl.format(name=NAME, preview=f"http://127.0.0.1:{br.PREVIEW_PORT}/@{s['id']}", root=ctx.root, platform=platform.system(), today=date.today().isoformat(),
-                               extra=extra + browser_hint + skills, tree=tools.LS(ctx, ".", 1))
-        recent: list[str] = []
-        shot = None
-        t0, nsteps, final_idx, probes = time.time(), 0, None, 0
-        consec, abort, nudges, held, plan_asked = 0, False, 0, None, 0
-        if not _review:
-            before = None
-            if mode != "plan":
-                before = await asyncio.to_thread(cp.checkpoint, ctx.root, f"dogear: before: {text.strip()[:90]}")
-                if before is None and cp.last_error:
-                    await self.send({"type": "notice", "text": f"No undo for this run: {cp.last_error}"})
+            profiles.note_issue(cfg.model, "runs")
+        system, think = await self._build_system(ctx, s, text, cfg, prof, _task)
+
+        st = TurnStats(t0=time.time(), text=text)
+        if _review and self._carry:
+            st = self._carry                                  # the review continues the run's statistics
+        elif cfg.mode != "plan":
+            before = await asyncio.to_thread(cp.checkpoint, ctx.root, f"dogear: before: {text.strip()[:90]}")
+            if before is None and cp.last_error:
+                await self.send({"type": "notice", "text": f"No undo for this run: {cp.last_error}"})
             self._cp = {"before": before, "root": str(ctx.root)}
+        else:
+            self._cp = {"before": None, "root": str(ctx.root)}
         user_idx = sum(1 for m in s["messages"] if m["role"] == "user" and not m.get("review") and not m.get("compact")) - 1
-        info = {"sources": [], "changes": {}, "commands": [], "tools": set(), "tests": []}
-        orig_text, cancelled = text, False
-        receipt_page = None
-        if _review and getattr(self, "_carry", None):
-            c = self._carry
-            t0, nsteps, info, orig_text = c["t0"], c["nsteps"], c["info"], c["text"]
-            receipt_page = c.get("page")
+        final_idx, cancelled = None, False
         try:
             await self.sync_mcp(s["root"])
-            names = prof.tool_names(list(tools.TOOLS)) if prof.tools else []
-            if mode == "plan":                            # the phase decides what the model sees
-                names = [n for n in planning.PLAN_TOOLS if n in tools.TOOLS]
-            else:
-                hide = {"kanban_create_tasks", *CUT_TOOLS} | (set() if _task else set(planning.EXEC_TOOLS))
-                names = [n for n in names if n not in hide]
-                if _task:
-                    names += [n for n in planning.EXEC_TOOLS if n in tools.TOOLS and n not in names]
-            specs = [tools.TOOLS[n][2] for n in names] + (self.mcp.specs() if prof.tools else [])
-            allowed = set(names) | {sp["function"]["name"] for sp in self.mcp.specs()}
+            specs, allowed = self._toolbox(prof, cfg.mode, _task)
             for _ in range(MAX_STEPS):
-                _trim(s["messages"], int(num_ctx * 0.7))
+                _trim(s["messages"], int(cfg.num_ctx * 0.7))
                 msgs = [{"role": "system", "content": system}] + _wire(s["messages"])
-                if shot:
-                    msgs.append({"role": "user", "content": "Screenshot of the browser after your last action:", "images": [shot]})
-                    shot = None
-                content, calls, done, use_think = "", [], {}, think
-                for attempt in range(4):
-                    try:
-                        async for kind, p in llm.stream(self.client, model, msgs, specs, use_think, num_ctx):
-                            if kind == "thinking":
-                                await self.send({"type": "thinking", "text": p})
-                            elif kind == "content":
-                                content += p
-                                await self.send({"type": "token", "text": p})
-                            elif kind == "call":
-                                calls.append(p)
-                            else:
-                                done = p
-                        break
-                    except llm.LLMError as e:
-                        low = str(e).lower()
-                        if attempt == 0 and use_think and "think" in low:
-                            use_think = False
-                            continue
-                        if attempt < 3 and any(k in low for k in ("xml syntax", "tool call", "parse", "stalled")):
-                            # the model emitted a malformed tool call that the server could not parse: ask again
-                            content, calls, done = "", [], {}
-                            profiles.note_issue(model, "malformed")
-                            msgs = msgs + [{"role": "user", "content": "Your last tool call was malformed and could not be "
-                                            "parsed. Call the tool again with valid arguments."}]
-                            continue
-                        raise
-
+                if st.shot:
+                    msgs.append({"role": "user", "content": "Screenshot of the browser after your last action:", "images": [st.shot]})
+                    st.shot = None
+                content, calls, done = await self._call_model(cfg, msgs, specs, think)
                 if not calls and content.strip() and prof.tools:
                     saved = profiles.salvage_text_calls(content, allowed)
-                    if saved:
+                    if saved:                                    # a call written as text instead of made
                         calls, content = saved, ""
-                        profiles.note_issue(model, "text_calls")
+                        profiles.note_issue(cfg.model, "text_calls")
                 msg = {"role": "assistant", "content": content}
                 if calls:
                     msg["tool_calls"] = calls
                 s["messages"].append(msg)
                 ev = done.get("eval_count", 0)
                 await self.send({"type": "usage", "prompt": done.get("prompt_eval_count", 0), "out": ev,
-                                 "tps": round(ev / max(done.get("eval_duration", 1) / 1e9, 0.001), 1), "ctx": num_ctx})
-                if not calls and nudges < 2:
-                    pasted = (not info["tools"] and "```" in content and re.search(
-                        r"\b(create|build|write|make|generate|implement|erstell\w*|bau\w*|schreib\w*|mach\w*)\b.*"
-                        r"(\.\w{1,5}\b|\bfile\b|\bdatei\b|\bscript\b|\bpage\b|\bseite\b)", text, re.I | re.S))
-                    announced = len(content) < 700 and re.match(
-                        r"\s*(i will|i'll|i am going to|i'm going to|let me|now i|next,? i|first,? i|ich werde|ich erstelle|lass mich|ich beginne)\b", content, re.I)
-                    m_file = re.search(r"\b([\w./-]+\.(?:html|py|js|css|json|md|txt|sh|ts))\b", text)
-                    blocks = re.findall(r"```[\w+-]*\n(.*?)```", content, re.S)
-                    if pasted and m_file and len(blocks) == 1:
-                        held = (m_file.group(1), blocks[0])           # remember the code the model produced
-                    refused = (not info["tools"] and len(content) < 1500 and re.search(
-                        r"\b(i cannot|i can't|i'm unable|i am unable|i do not have access|i don't have access|as an ai|ich kann nicht|"
-                        r"ich habe keinen zugriff)\b", content, re.I))
-                    if held and nudges >= 1 and not info["tools"]:
-                        # the nudge did not help: salvage the pasted code into the file the request names
-                        m_file, blocks = type("M", (), {"group": lambda self, i: held[0]})(), [held[1]]
-                        if m_file and len(blocks) == 1:
-                            cid2 = uuid.uuid4().hex[:8]
-                            args2 = {"file_path": m_file.group(1), "content": blocks[0]}
-                            s["messages"].append({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "Write", "arguments": args2}}]})
-                            await self.send({"type": "tool", "id": cid2, "name": "Write", "args": args2, "label": args2["file_path"]})
-                            ctx.call_id, ctx.meta = cid2, {}
-                            result2, ok2 = await self._run_tool(ctx, cid2, "Write", args2, mode)
-                            meta2 = dict(ctx.meta); new2 = meta2.pop("new_text", None)
-                            s["messages"].append({"role": "tool", "tool_name": "Write", "content": result2, "meta": meta2, "ok": ok2})
-                            await self.send({"type": "result", "id": cid2, "ok": ok2, "text": result2[:6000], "meta": meta2})
-                            if ok2:
-                                nsteps += 1; info["tools"].add("Write")
-                                ch = info["changes"].setdefault(args2["file_path"], {"added": 0, "removed": 0, "created": False})
-                                if meta2.get("diff"):
-                                    ch["added"] += meta2["diff"]["added"]; ch["removed"] += meta2["diff"]["removed"]
-                                ch["created"] = ch["created"] or bool(meta2.get("created"))
-                                await self.send({"type": "changed", "path": args2["file_path"], "created": bool(meta2.get("created")),
-                                                 "diff": meta2.get("diff"), "text": new2 if new2 and len(new2) < 200_000 else None})
-                            s["messages"].append({"role": "user", "review": True, "content":
-                                                  "The file was created from your code block. Now verify it works (run it, or open it in the browser) and fix problems."})
-                            save(s)
-                            continue
-                    stripped = content.strip()
-                    unfinished = bool(info["tools"] and 8 < len(stripped) < 500 and not re.search(r"[.!?…:;)\]}\"'`>*_|]\s*$", stripped))
-                    plan_missing = mode == "plan" and not ctx.plan and not _review
-                    task_missing = bool(_task) and not ctx.task_done and not abort
-                    if pasted or announced or refused or unfinished or plan_missing or task_missing:
-                        # small models paste code into the chat, or announce an action and then stop without calling a tool
-                        nudges += 1
-                        profiles.note_issue(model, "announced")
-                        s["messages"].append({"role": "user", "review": True, "content":
-                                              ("This is the planning phase. Do not answer in prose: finish by calling kanban_create_tasks with your "
-                                               "reasoning and the task list. If you still need information, read it first, then call the tool." if plan_missing else
-                                               "This task turn must end with a tool call: complete_current_task with a one-line summary if the task is "
-                                               "done and verified, or request_replan with the reason if the plan has to change." if task_missing else
-                                               "You pasted code into the chat. Do not do that. Create the file now with the Write tool at the "
-                                               "path from the request, then verify it (run it, or open it in the browser)." if pasted else
-                                               "You DO have tools and full access to the project: Glob, Grep, Read, Write, Edit, Bash. "
-                                               "Use them now to do the task. Do not explain, call a tool." if refused else
-                                               "Your last message stopped in the middle of a sentence and no tool was called. Continue the task: "
-                                               "call the next tool now." if unfinished else
-                                               "You described the next step but did not call a tool. Call the tool now, without explaining first.")})
-                        continue
+                                 "tps": round(ev / max(done.get("eval_duration", 1) / 1e9, 0.001), 1), "ctx": cfg.num_ctx})
                 if not calls:
+                    if await self._nudge(ctx, s, st, content, cfg, _review, _task):
+                        continue
                     final_idx = len(s["messages"]) - 1
                     break
-
                 plan_block = False
                 for c in calls:
-                    fn = c["function"]
-                    name, args = fn["name"], fn.get("arguments") or {}
-                    if isinstance(args, str):
-                        args = json.loads(args or "{}")
-                    if mode == "plan" and name not in allowed:       # the phase decides what exists, not the model
+                    name, args = _call_parts(c)
+                    if cfg.mode == "plan" and name not in allowed:       # the phase decides what exists, not the model
                         s["messages"].append({"role": "tool", "tool_name": name, "ok": False, "meta": {},
                                               "content": f"{name} is not available in the planning phase. Investigate with Read, Grep, LS "
                                                          "or Glob, then call kanban_create_tasks. Execution comes after the user approves."})
-                        consec += 1
+                        st.consec += 1
                         continue
                     cid = uuid.uuid4().hex[:8]
                     sig = f"{name}:{json.dumps(args, sort_keys=True)}"
-                    recent.append(sig)
-                    await self.send({"type": "tool", "id": cid, "name": name, "args": args,
-                                     "label": tools.label(name, args)})
+                    st.recent.append(sig)
+                    await self.send({"type": "tool", "id": cid, "name": name, "args": args, "label": tools.label(name, args)})
                     ctx.call_id, ctx.meta = cid, {}
-                    if (name in ("Write", "Edit", "MultiEdit") and not _review and mode != "plan" and prof.planning and "TodoWrite" in allowed
-                            and len(orig_text) >= 200 and (plan_asked == 0 or plan_block)
+                    if (name in ("Write", "Edit", "MultiEdit") and not _review and cfg.mode != "plan" and prof.planning and "TodoWrite" in allowed
+                            and len(st.text) >= 200 and (st.plan_asked == 0 or plan_block)
                             and not any(t.get("status") != "completed" for t in ctx.todos)):
-                        plan_asked += 1
+                        # the plan gate: a large job starts with a task list, not with the first file
+                        st.plan_asked += 1
                         plan_block = True
-                        ok = False
-                        result = ("Not executed: plan first. This is a multi-step job. Call TodoWrite now with 3-7 concrete steps "
-                                  "(for a web page: start with 'Design brief', end with 'Verify on desktop and phone'), exactly one "
-                                  "in_progress, then continue with the first step. Update the list as you go.")
+                        result, ok = ("Not executed: plan first. This is a multi-step job. Call TodoWrite now with 3-7 concrete steps "
+                                      "(for a web page: start with 'Design brief', end with 'Verify on desktop and phone'), exactly one "
+                                      "in_progress, then continue with the first step. Update the list as you go."), False
                     else:
-                        result, ok = await self._run_tool(ctx, cid, name, args, mode)
-                    # stagnation: many diagnostic commands in a row, no edit in between
-                    changed_code = name in ("Write", "Edit")
-                    probes = 0 if changed_code else probes + (1 if name in ("Bash", "Read", "Grep") else 0)
-                    if probes and probes % 6 == 0:
-                        result += ("\n[You have run %d diagnostic steps without changing any code. Stop probing. "
-                                   "Read the whole function once, trace the failing input through it by hand line by line "
-                                   "(especially loop counters, early exits and missing `continue`/`return`), then make one Edit.]" % probes)
-                    window = recent[-10:]
-                    if len(window) >= 6 and len(set(window[-6:])) <= 2:
-                        result += ("\n[You are repeating the same actions without progress. Do not call these tools again. "
-                                   "If the task is done, stop and give your final answer. Otherwise change your approach.]")
-                    if len(window) >= 10 and len(set(window)) <= 2:
-                        abort = True
-                    consec = 0 if ok else consec + 1
-                    if consec == 5:
-                        result += ("\n[The last 5 tool calls all failed. Stop repeating them. Use the exact parameter names from the tool "
-                                   "descriptions; use Read/Write/Edit for files and Bash for commands; the browser is only for http(s) pages.]")
-                    if consec >= 12:
-                        abort = True
-                    if recent[-3:].count(sig) == 3:
-                        result += "\n[Note: this exact call has now been made three times. Try a different approach or ask the user.]"
-                    if ctx.image and await llm.has_vision(self.client, model):
-                        shot = ctx.image
-                    ctx.image = None
-                    meta = dict(ctx.meta)
-                    nsteps += 1
-                    info["tools"].add(name)
-                    if ok:
-                        for src in _sources(name, args, result):
-                            if not any(x["url"] == src["url"] for x in info["sources"]):
-                                info["sources"].append(src)
-                        if name in ("Write", "Edit", "MultiEdit") and meta.get("diff"):
-                            ch = info["changes"].setdefault(args.get("file_path", ""), {"added": 0, "removed": 0, "created": False})
-                            ch["added"] += meta["diff"]["added"]; ch["removed"] += meta["diff"]["removed"]
-                            ch["created"] = ch["created"] or bool(meta.get("created"))
-                    if name == "Bash":
-                        info["commands"].append({"cmd": args.get("command", "")[:140], "exit": meta.get("exit", 0 if ok else 1)})
-                    if name == "RunTests" and isinstance(meta.get("tests"), dict):
-                        t_ = meta["tests"]
-                        info["test_last"] = {k: int(t_.get(k) or 0) for k in ("passed", "failed", "errors")} | {"exit": int(meta.get("exit") or 0), "runs": int(info.get("test_last", {}).get("runs", 0)) + 1}
-                        info.setdefault("tests", []).append(bool(ok and not meta.get("exit") and not t_.get("failed") and not t_.get("errors")
-                                                                 and (t_.get("passed") or 0) >= 1))
-                    new_text = meta.pop("new_text", None)
-                    s["messages"].append({"role": "tool", "tool_name": name, "content": result, "meta": meta, "ok": ok})
-                    await self.send({"type": "result", "id": cid, "ok": ok, "text": result[:6000], "meta": meta})
-                    if name == "TodoWrite" and ok:
-                        s["todos"] = ctx.todos
-                        await self.send({"type": "todos", "items": ctx.todos})
-                    if name in ("Write", "Edit", "MultiEdit") and ok:
-                        await self.send({"type": "changed", "path": args.get("file_path", ""),
-                                         "created": bool(meta.get("created")), "diff": meta.get("diff"),
-                                         "text": new_text if new_text and len(new_text) < 200_000 else None})
-                    elif name in ("Bash", "KillBash"):
-                        await self.send({"type": "fs"})
-                    save(s)
+                        result, ok = await self._run_tool(ctx, cid, name, args, cfg.mode)
+                    result = self._guard(st, name, sig, result, ok)
+                    await self._record(ctx, s, st, cid, name, args, result, ok, cfg.model)
                 if ctx.plan:
                     # planning phase done: the board goes to the user for approval, nothing is executed yet
                     plan = ctx.plan
@@ -864,108 +681,377 @@ class Agent:
                     s["todos"] = ctx.todos
                     await self.send({"type": "todos", "items": ctx.todos})
                     break
-                if abort:
+                if st.abort:
                     break
             else:
-                abort = True
-                reason = f"Step limit ({MAX_STEPS}) reached"
-            if abort and final_idx is None:
-                # never end silently: one last answer without tools
-                reason = locals().get("reason") or "Stopped after repeated failing tool calls"
-                await self.send({"type": "notice", "text": f"{reason}; summarizing."})
-                wrap = {"role": "user", "content": f"{reason}. Without calling any tool, give a short final report: "
-                        "what is done and verified, what is unfinished or unverified, and your assumptions."}
-                msgs = [{"role": "system", "content": system}] + _wire(s["messages"]) + [wrap]
-                content = ""
-                async for kind, p in llm.stream(self.client, model, msgs, None, False, num_ctx):
-                    if kind == "content":
-                        content += p
-                        await self.send({"type": "token", "text": p})
-                s["messages"].append({"role": "assistant", "content": content})
-                final_idx = len(s["messages"]) - 1
+                st.abort, st.reason = True, f"Step limit ({MAX_STEPS}) reached"
+            if st.abort and final_idx is None:
+                final_idx = await self._final_report(s, system, st, cfg)
         except asyncio.CancelledError:
             cancelled = True
             await self.send({"type": "notice", "text": "Interrupted."})
             raise
         except Exception as e:
+            log.exception("turn failed")
             await self.send({"type": "error", "text": f"{type(e).__name__}: {e}"})
         finally:
-            s["todos"] = ctx.todos
-            if _task:                                           # the review turn that may follow has no task and must not overwrite this
-                self.last_task, self.last_steps = ctx.task_done, nsteps
-            last = not _task or bool(_task.get("last"))      # a plan is reviewed and audited once, after its last task
-            gate = ""
-            web_files = any(p.lower().endswith((".html", ".htm", ".css", ".js")) for p in info["changes"])
-            self._audit_counts = None
-            if last and not _review and not cancelled and final_idx is not None and mode != "plan" and any(
-                    p.lower().endswith((".html", ".htm", ".css", ".js")) for p in info["changes"]):
-                users = [m["content"] for m in s["messages"] if m["role"] == "user" and not m.get("review") and isinstance(m.get("content"), str)]
-                brief = "\n\n".join(users)
-                brief = brief if len(brief) <= 3500 else brief[:1200] + "\n…\n" + brief[-2300:]
-                wrote_page = any(p.lower().endswith((".html", ".htm")) and (v.get("created") or v.get("added", 0) >= 40)
-                                 for p, v in info["changes"].items())    # do not proofread a page the run only touched
-                gate = await self._audit_changed(ctx.root, list(info["changes"]), model, brief if wrote_page else "")
-                if self._audit_counts:
-                    receipt_page = {"name": self._audit_counts["page"], "before": self._audit_counts, "after": None, "rounds": 0}
-                if gate:
-                    await self.send({"type": "notice", "text": "Design audit found problems; running a fix pass."})
-            elif _review and web_files and not cancelled and mode != "plan":
-                # after the fix pass: measure once more so the receipt can say what is left
-                await self._audit_changed(ctx.root, list(info["changes"]), model, "")
-                if self._audit_counts:
-                    receipt_page = receipt_page or {"name": self._audit_counts["page"], "before": None, "after": None, "rounds": 0}
-                    receipt_page["after"] = self._audit_counts
-                    receipt_page["rounds"] = 1
-            if last and not _review and not cancelled and final_idx is not None and (gate or (
-                    review_on and prof.review and info["changes"] and nsteps >= 6)):
-                # a second pass: check the result against the request (and fix what the audit measured)
-                self._carry = {"nsteps": nsteps, "t0": t0, "info": info, "text": text, "page": receipt_page}
-                save(s)
-                await self.send({"type": "review_start"})
-                prompt = REVIEW_PROMPT.format(task=text[:2000])
-                if gate:
-                    prompt += ("\n\nAn automatic measured design audit of your page found these problems:\n" + gate +
-                               "\n\nFix every HIGH and MEDIUM finding. Copy-check findings are text problems: correct the wording as suggested; "
-                               "for a claim that is not in the client's request, remove it or rewrite the sentence without the invented fact "
-                               "(never invent facts, numbers or promises). Then run browser_audit yourself and repeat until it is clean "
-                               "(at most three rounds). Mention anything you decided not to fix and why.")
-                await self.turn(prompt, model, think, mode, num_ctx, False, True)
-                return
-            self.running = False
-            if final_idx is None and nsteps and not _review:
-                # a stopped or aborted run still gets its summary line; the UI must never look as if it were running
-                s["messages"].append({"role": "assistant", "content": "", "stopped": True})
-                final_idx = len(s["messages"]) - 1
-            if final_idx is not None:
-                visited = [x for x in info["sources"] if x["kind"] == "visited"]
-                others = [x for x in info["sources"] if x["kind"] != "visited"]
-                summary = {"steps": nsteps, "secs": round(time.time() - t0),
-                           "sources": (visited + others)[:8],
-                           "changes": [{"path": p, **v} for p, v in info["changes"].items()],
-                           "commands": info["commands"][-8:],
-                           "receipt": self._receipt(info, receipt_page, cancelled or abort, t0, mode)}
-                if self._cp.get("before") and (info["changes"] or info["commands"]):
-                    after = await asyncio.to_thread(cp.checkpoint, ctx.root, f"dogear: after: {s['title']}")
-                    summary["checkpoint"] = {"before": self._cp["before"], "after": after, "root": self._cp["root"]}
-                s["messages"][final_idx]["summary"] = summary
-                await self.send({"type": "summary", "user_idx": user_idx, **summary})
-            save(s)
-            await self.send({"type": "done"})
-            if final_idx is not None and s["messages"][final_idx].get("content") and not cancelled:
-                asyncio.create_task(self._name(s))      # the session title; the answer itself is shown as streamed, never re-rendered
+            await self._finish(ctx, s, st, cfg, prof, think, _review, _task, final_idx, cancelled, user_idx)
 
-    def _receipt(self, info: dict, page: dict | None, stopped: bool, t0: float, mode: str) -> dict:
+    # -- the pieces of a turn ----------------------------------------------------
+    def _new_ctx(self, cfg: "RunConfig") -> "tools.Ctx":
+        s = self.session
+        ctx = tools.Ctx(Path(s["root"]), self.send, self.procs, self.browser)
+        ctx.todos = s.get("todos", [])
+        ctx.subagent = lambda d, p, f: self._subagent(ctx, d, p, f, cfg.model, cfg.num_ctx)
+        ctx.skill = lambda n: self._skill(n, ctx.root)
+        ctx.library = lambda q, k: library.search(self.client, llm.URL, q, k)
+        ctx.ultra = lambda pattern, task, scope: self._ultra(ctx, cfg.model, cfg.num_ctx, pattern, task, scope)
+        ctx.ask_user = lambda qs: self._ask_user(ctx.call_id, qs)
+        br.PREVIEW_ROOTS[s["id"]] = str(ctx.root)
+        ctx.run_id = s["id"]
+        return ctx
+
+    async def _auto_compact(self, cfg: "RunConfig"):
+        """Condense the conversation before a turn when the context window is nearly full."""
+        s = self.session
+        if _approx_tokens(_wire(s["messages"])) <= int(cfg.num_ctx * 0.7):
+            return
+        try:
+            r = await self.compact(cfg.model, cfg.num_ctx)
+            await self.send({"type": "compacted", "session": s, "auto": True, **r})
+        except Exception as e:
+            log.warning("auto compact failed: %s", e)
+            await self.send({"type": "notice", "text": f"Could not compact automatically: {e}"})
+
+    async def _save_images(self, images: list | None, model: str) -> list[str]:
+        names = []
+        for b in (images or [])[:4]:
+            try:
+                names.append(save_image(b))
+            except Exception as e:
+                await self.send({"type": "notice", "text": f"Image skipped: {e}"})
+        if names and not await llm.has_vision(self.client, model):
+            await self.send({"type": "notice", "text": f"{model} cannot see images; they are ignored for this run. Pick a vision model."})
+            return []
+        return names
+
+    async def _build_system(self, ctx, s: dict, text: str, cfg: "RunConfig", prof, _task) -> tuple[str, bool]:
+        """The system prompt for this turn: instructions file, skills, memory, plan phase, task list, references.
+        Returns the prompt and whether the model should think (the plan phase thinks even if the user switched it off)."""
+        think = cfg.think
+        extra = ""
+        for name in INSTRUCTION_FILES:
+            f = ctx.root / name
+            if f.is_file():
+                extra = f"\nProject instructions ({name}):\n{f.read_text()[:6000]}\n"
+                break
+        browser_hint = ""
+        if re.search(r"\b(google|googl\w*|bing|youtube|im browser|in the browser|im internet|open (the )?(site|page|website))\b", text, re.I):
+            browser_hint = ("\nThe user explicitly wants this done in the browser. Do NOT use WebSearch for it: open the site with "
+                            "browser_navigate (for Google: https://www.google.com/search?q=<url-encoded query>), read the page with "
+                            "browser_read, and call browser_handoff if a CAPTCHA or bot check appears.\n")
+        index = list_skills(ctx.root) if prof.skills_index else []
+        if index:
+            extra += "\nSkills you can load with the Skill tool when the task matches:\n" + "\n".join(
+                f"- {k['name']}: {k['description']}" for k in index) + "\n"
+        notes, counts = mem.prompt_block(ctx.root, text)
+        extra += notes
+        if counts["memory"] or counts["snippets"]:
+            await self.send({"type": "notice", "text": f"Memory: {counts['memory']} notes, {counts['snippets']} snippets"})
+        if cfg.mode == "plan":
+            extra += planning.PLAN_PROMPT
+            hits = await self._library(text, 3)             # proven solutions go into the planning phase without relying on the model to ask
+            if hits:
+                extra += ("\nProven solutions from earlier runs the user rated as good (reuse them where they fit; library_search finds more):\n"
+                          + library.format_hits(hits)[:5000] + "\n")
+                await self.send({"type": "notice", "text": f"Library: {len(hits)} matching solution{'s' if len(hits) != 1 else ''}"})
+            if prof.thinking:
+                think = True
+        if _task:
+            extra += planning.EXEC_PROMPT
+        if s.get("todos"):
+            mark = {"completed": "[x]", "in_progress": "[~]", "pending": "[ ]"}
+            extra += "\nCurrent task list (the user may have edited it; keep it in sync with TodoWrite):\n" + "\n".join(
+                f"- {mark.get(t.get('status'), '[ ]')} {t.get('content', '')}" for t in s["todos"]) + "\n"
+        skills, skill_names = load_skills(text, ctx.root)
+        if skill_names:
+            await self.send({"type": "notice", "text": "Skills: " + ", ".join(skill_names)})
+        if cfg.mode != "plan" and "web-design" in skill_names:
+            refs = await self._library(text, 2, "design-plan")   # reference designs for page briefs: direction, not templates
+            if refs:
+                skills += ("\nDesign plans of similar solved briefs (for direction: how they avoid the default look; do not copy them; "
+                           "library_search with full=true returns a complete reference page):\n" + library.format_hits(refs)[:4000] + "\n")
+                await self.send({"type": "notice", "text": f"Design references: {len(refs)}"})
+        drop = []
+        if prof.prompt == "lean" or not prof.planning:
+            drop += ["TodoWrite"]
+        if prof.prompt == "lean":
+            drop += ["Task tool", "Skill tool", "Memory tool"]
+        sys_tpl = "\n".join(l for l in SYSTEM.split("\n") if not any(d in l for d in drop)) if drop else SYSTEM
+        system = sys_tpl.format(name=NAME, preview=f"http://127.0.0.1:{br.PREVIEW_PORT}/@{s['id']}", root=ctx.root, platform=platform.system(),
+                                today=date.today().isoformat(), extra=extra + browser_hint + skills, tree=tools.LS(ctx, ".", 1))
+        return system, think
+
+    async def _library(self, text: str, k: int, language: str | None = None) -> list:
+        try:
+            return list(await (library.search(self.client, llm.URL, text, k, language) if language else library.search(self.client, llm.URL, text, k)))
+        except Exception as e:
+            log.warning("library search failed: %s", e)
+            return []
+
+    def _toolbox(self, prof, mode: str, _task) -> tuple[list[dict], set[str]]:
+        """Which tools the model sees: the profile's toolbox, narrowed by the phase (plan / task execution), minus the cut tools."""
+        names = prof.tool_names(list(tools.TOOLS)) if prof.tools else []
+        if mode == "plan":
+            names = [n for n in planning.PLAN_TOOLS if n in tools.TOOLS]
+        else:
+            hide = {"kanban_create_tasks", *CUT_TOOLS} | (set() if _task else set(planning.EXEC_TOOLS))
+            names = [n for n in names if n not in hide]
+            if _task:
+                names += [n for n in planning.EXEC_TOOLS if n in tools.TOOLS and n not in names]
+        mcp_specs = self.mcp.specs() if prof.tools else []
+        specs = [tools.TOOLS[n][2] for n in names] + mcp_specs
+        return specs, set(names) | {sp["function"]["name"] for sp in mcp_specs}
+
+    async def _call_model(self, cfg: "RunConfig", msgs: list, specs: list, think: bool) -> tuple[str, list, dict]:
+        """One streamed model call. Retries once without thinking if the model cannot think, and up to three times
+        after a malformed tool call. Returns (content, tool calls, the final stream record)."""
+        use_think = think
+        for attempt in range(4):
+            content, calls, done = "", [], {}
+            try:
+                async for kind, p in llm.stream(self.client, cfg.model, msgs, specs, use_think, cfg.num_ctx):
+                    if kind == "thinking":
+                        await self.send({"type": "thinking", "text": p})
+                    elif kind == "content":
+                        content += p
+                        await self.send({"type": "token", "text": p})
+                    elif kind == "call":
+                        calls.append(p)
+                    else:
+                        done = p
+                return content, calls, done
+            except llm.LLMError as e:
+                low = str(e).lower()
+                if attempt == 0 and use_think and "think" in low:
+                    use_think = False
+                    continue
+                if attempt < 3 and any(k in low for k in ("xml syntax", "tool call", "parse", "stalled")):
+                    profiles.note_issue(cfg.model, "malformed")
+                    msgs = msgs + [{"role": "user", "content": "Your last tool call was malformed and could not be "
+                                    "parsed. Call the tool again with valid arguments."}]
+                    continue
+                raise
+        return "", [], {}
+
+    async def _nudge(self, ctx, s: dict, st: "TurnStats", content: str, cfg: "RunConfig", _review: bool, _task) -> bool:
+        """The model answered without a tool call although the turn is not finished. Small models paste code into the chat,
+        announce an action and stop, refuse, or trail off; a plan or task turn must end with its closing call.
+        Pushes the model once more (twice at most) or salvages pasted code into the file. True = call the model again."""
+        if st.nudges >= 2:
+            return False
+        text = st.text
+        pasted = (not st.tools and "```" in content and re.search(
+            r"\b(create|build|write|make|generate|implement|erstell\w*|bau\w*|schreib\w*|mach\w*)\b.*"
+            r"(\.\w{1,5}\b|\bfile\b|\bdatei\b|\bscript\b|\bpage\b|\bseite\b)", text, re.I | re.S))
+        announced = len(content) < 700 and re.match(
+            r"\s*(i will|i'll|i am going to|i'm going to|let me|now i|next,? i|first,? i|ich werde|ich erstelle|lass mich|ich beginne)\b", content, re.I)
+        m_file = re.search(r"\b([\w./-]+\.(?:html|py|js|css|json|md|txt|sh|ts))\b", text)
+        blocks = re.findall(r"```[\w+-]*\n(.*?)```", content, re.S)
+        if pasted and m_file and len(blocks) == 1:
+            st.held = (m_file.group(1), blocks[0])           # remember the code the model produced
+        refused = (not st.tools and len(content) < 1500 and re.search(
+            r"\b(i cannot|i can't|i'm unable|i am unable|i do not have access|i don't have access|as an ai|ich kann nicht|"
+            r"ich habe keinen zugriff)\b", content, re.I))
+        if st.held and st.nudges >= 1 and not st.tools:
+            # the nudge did not help: salvage the pasted code into the file the request names
+            path, code = st.held
+            cid = uuid.uuid4().hex[:8]
+            args = {"file_path": path, "content": code}
+            s["messages"].append({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "Write", "arguments": args}}]})
+            await self.send({"type": "tool", "id": cid, "name": "Write", "args": args, "label": path})
+            ctx.call_id, ctx.meta = cid, {}
+            result, ok = await self._run_tool(ctx, cid, "Write", args, cfg.mode)
+            await self._record(ctx, s, st, cid, "Write", args, result, ok, cfg.model)
+            s["messages"].append({"role": "user", "review": True, "content":
+                                  "The file was created from your code block. Now verify it works (run it, or open it in the browser) and fix problems."})
+            save(s)
+            return True
+        stripped = content.strip()
+        unfinished = bool(st.tools and 8 < len(stripped) < 500 and not re.search(r"[.!?…:;)\]}\"'`>*_|]\s*$", stripped))
+        plan_missing = cfg.mode == "plan" and not ctx.plan and not _review
+        task_missing = bool(_task) and not ctx.task_done and not st.abort
+        if not (pasted or announced or refused or unfinished or plan_missing or task_missing):
+            return False
+        st.nudges += 1
+        profiles.note_issue(cfg.model, "announced")
+        if plan_missing:
+            why = ("This is the planning phase. Do not answer in prose: finish by calling kanban_create_tasks with your "
+                   "reasoning and the task list. If you still need information, read it first, then call the tool.")
+        elif task_missing:
+            why = ("This task turn must end with a tool call: complete_current_task with a one-line summary if the task is "
+                   "done and verified, or request_replan with the reason if the plan has to change.")
+        elif pasted:
+            why = ("You pasted code into the chat. Do not do that. Create the file now with the Write tool at the "
+                   "path from the request, then verify it (run it, or open it in the browser).")
+        elif refused:
+            why = ("You DO have tools and full access to the project: Glob, Grep, Read, Write, Edit, Bash. "
+                   "Use them now to do the task. Do not explain, call a tool.")
+        elif unfinished:
+            why = "Your last message stopped in the middle of a sentence and no tool was called. Continue the task: call the next tool now."
+        else:
+            why = "You described the next step but did not call a tool. Call the tool now, without explaining first."
+        s["messages"].append({"role": "user", "review": True, "content": why})
+        return True
+
+    def _guard(self, st: "TurnStats", name: str, sig: str, result: str, ok: bool) -> str:
+        """Notes appended to a tool result when the run stagnates, repeats itself or keeps failing; sets st.abort."""
+        st.probes = 0 if name in ("Write", "Edit") else st.probes + (1 if name in ("Bash", "Read", "Grep") else 0)
+        if st.probes and st.probes % 6 == 0:
+            result += ("\n[You have run %d diagnostic steps without changing any code. Stop probing. "
+                       "Read the whole function once, trace the failing input through it by hand line by line "
+                       "(especially loop counters, early exits and missing `continue`/`return`), then make one Edit.]" % st.probes)
+        window = st.recent[-10:]
+        if len(window) >= 6 and len(set(window[-6:])) <= 2:
+            result += ("\n[You are repeating the same actions without progress. Do not call these tools again. "
+                       "If the task is done, stop and give your final answer. Otherwise change your approach.]")
+        if len(window) >= 10 and len(set(window)) <= 2:
+            st.abort, st.reason = True, "Stopped: the same actions were repeated without progress"
+        st.consec = 0 if ok else st.consec + 1
+        if st.consec == 5:
+            result += ("\n[The last 5 tool calls all failed. Stop repeating them. Use the exact parameter names from the tool "
+                       "descriptions; use Read/Write/Edit for files and Bash for commands; the browser is only for http(s) pages.]")
+        if st.consec >= 12:
+            st.abort, st.reason = True, "Stopped after repeated failing tool calls"
+        if st.recent[-3:].count(sig) == 3:
+            result += "\n[Note: this exact call has now been made three times. Try a different approach or ask the user.]"
+        return result
+
+    async def _record(self, ctx, s: dict, st: "TurnStats", cid: str, name: str, args: dict, result: str, ok: bool, model: str):
+        """Book a finished tool call: statistics for the receipt, the tool message for the model, the events for the UI."""
+        if ctx.image and await llm.has_vision(self.client, model):
+            st.shot = ctx.image
+        ctx.image = None
+        meta = dict(ctx.meta)
+        st.nsteps += 1
+        st.tools.add(name)
+        if ok:
+            for src in _sources(name, args, result):
+                if not any(x["url"] == src["url"] for x in st.sources):
+                    st.sources.append(src)
+            if name in ("Write", "Edit", "MultiEdit") and meta.get("diff"):
+                ch = st.changes.setdefault(args.get("file_path", ""), {"added": 0, "removed": 0, "created": False})
+                ch["added"] += meta["diff"]["added"]
+                ch["removed"] += meta["diff"]["removed"]
+                ch["created"] = ch["created"] or bool(meta.get("created"))
+        if name == "Bash":
+            st.commands.append({"cmd": args.get("command", "")[:140], "exit": meta.get("exit", 0 if ok else 1)})
+        if name == "RunTests" and isinstance(meta.get("tests"), dict):
+            t_ = meta["tests"]
+            st.test_last = {k: int(t_.get(k) or 0) for k in ("passed", "failed", "errors")} | {"exit": int(meta.get("exit") or 0),
+                                                                                              "runs": int((st.test_last or {}).get("runs", 0)) + 1}
+            st.tests.append(bool(ok and not meta.get("exit") and not t_.get("failed") and not t_.get("errors") and (t_.get("passed") or 0) >= 1))
+        new_text = meta.pop("new_text", None)
+        s["messages"].append({"role": "tool", "tool_name": name, "content": result, "meta": meta, "ok": ok})
+        await self.send({"type": "result", "id": cid, "ok": ok, "text": result[:6000], "meta": meta})
+        if name == "TodoWrite" and ok:
+            s["todos"] = ctx.todos
+            await self.send({"type": "todos", "items": ctx.todos})
+        if name in ("Write", "Edit", "MultiEdit") and ok:
+            await self.send({"type": "changed", "path": args.get("file_path", ""), "created": bool(meta.get("created")), "diff": meta.get("diff"),
+                             "text": new_text if new_text and len(new_text) < 200_000 else None})
+        elif name in ("Bash", "KillBash"):
+            await self.send({"type": "fs"})
+        save(s)
+
+    async def _final_report(self, s: dict, system: str, st: "TurnStats", cfg: "RunConfig") -> int:
+        """A run that was cut off (step limit, repeated failures) never ends silently: one last answer without tools."""
+        reason = st.reason or "Stopped after repeated failing tool calls"
+        await self.send({"type": "notice", "text": f"{reason}; summarizing."})
+        wrap = {"role": "user", "content": f"{reason}. Without calling any tool, give a short final report: "
+                "what is done and verified, what is unfinished or unverified, and your assumptions."}
+        msgs = [{"role": "system", "content": system}] + _wire(s["messages"]) + [wrap]
+        content = ""
+        async for kind, p in llm.stream(self.client, cfg.model, msgs, None, False, cfg.num_ctx):
+            if kind == "content":
+                content += p
+                await self.send({"type": "token", "text": p})
+        s["messages"].append({"role": "assistant", "content": content})
+        return len(s["messages"]) - 1
+
+    async def _finish(self, ctx, s: dict, st: "TurnStats", cfg: "RunConfig", prof, think: bool, _review: bool, _task, final_idx, cancelled: bool, user_idx: int):
+        """After the loop: the quality gate for web files, the self-check pass (once, after the last task), the summary with
+        the receipt, the checkpoint to undo to, and `done`. Runs on cancellation too, so the UI never looks alive."""
+        s["todos"] = ctx.todos
+        if _task:                                           # the review turn that may follow has no task and must not overwrite this
+            self.last_task, self.last_steps = ctx.task_done, st.nsteps
+        last = not _task or bool(_task.get("last"))      # a plan is reviewed and audited once, after its last task
+        gate = ""
+        web_files = any(p.lower().endswith((".html", ".htm", ".css", ".js")) for p in st.changes)
+        self._audit_counts = None
+        if last and not _review and not cancelled and final_idx is not None and cfg.mode != "plan" and web_files:
+            users = [m["content"] for m in s["messages"] if m["role"] == "user" and not m.get("review") and isinstance(m.get("content"), str)]
+            brief = "\n\n".join(users)
+            brief = brief if len(brief) <= 3500 else brief[:1200] + "\n…\n" + brief[-2300:]
+            wrote_page = any(p.lower().endswith((".html", ".htm")) and (v.get("created") or v.get("added", 0) >= 40)
+                             for p, v in st.changes.items())    # do not proofread a page the run only touched
+            gate = await self._audit_changed(ctx.root, list(st.changes), cfg.model, brief if wrote_page else "")
+            if self._audit_counts:
+                st.page = {"name": self._audit_counts["page"], "before": self._audit_counts, "after": None, "rounds": 0}
+            if gate:
+                await self.send({"type": "notice", "text": "Design audit found problems; running a fix pass."})
+        elif _review and web_files and not cancelled and cfg.mode != "plan":
+            await self._audit_changed(ctx.root, list(st.changes), cfg.model, "")     # measure once more: what is left for the receipt
+            if self._audit_counts:
+                st.page = st.page or {"name": self._audit_counts["page"], "before": None, "after": None, "rounds": 0}
+                st.page["after"], st.page["rounds"] = self._audit_counts, 1
+        if last and not _review and not cancelled and final_idx is not None and (gate or (
+                cfg.review_on and prof.review and st.changes and st.nsteps >= 6)):
+            # the self-check pass: the model checks its result against the request (and fixes what the audit measured)
+            self._carry = st
+            save(s)
+            await self.send({"type": "review_start"})
+            prompt = REVIEW_PROMPT.format(task=st.text[:2000])
+            if gate:
+                prompt += ("\n\nAn automatic measured design audit of your page found these problems:\n" + gate +
+                           "\n\nFix every HIGH and MEDIUM finding. Copy-check findings are text problems: correct the wording as suggested; "
+                           "for a claim that is not in the client's request, remove it or rewrite the sentence without the invented fact "
+                           "(never invent facts, numbers or promises). Then run browser_audit yourself and repeat until it is clean "
+                           "(at most three rounds). Mention anything you decided not to fix and why.")
+            await self.turn(prompt, cfg.model, think, cfg.mode, cfg.num_ctx, review_on=False, _review=True)
+            return
+        self._carry = None
+        self.running = False
+        if final_idx is None and st.nsteps and not _review:
+            s["messages"].append({"role": "assistant", "content": "", "stopped": True})   # a stopped run still gets its summary line
+            final_idx = len(s["messages"]) - 1
+        if final_idx is not None:
+            visited = [x for x in st.sources if x["kind"] == "visited"]
+            others = [x for x in st.sources if x["kind"] != "visited"]
+            summary = {"steps": st.nsteps, "secs": round(time.time() - st.t0), "sources": (visited + others)[:8],
+                       "changes": [{"path": p, **v} for p, v in st.changes.items()], "commands": st.commands[-8:],
+                       "receipt": self._receipt(st, cancelled or st.abort)}
+            if self._cp.get("before") and (st.changes or st.commands):
+                after = await asyncio.to_thread(cp.checkpoint, ctx.root, f"dogear: after: {s['title']}")
+                summary["checkpoint"] = {"before": self._cp["before"], "after": after, "root": self._cp["root"]}
+            s["messages"][final_idx]["summary"] = summary
+            await self.send({"type": "summary", "user_idx": user_idx, **summary})
+        save(s)
+        await self.send({"type": "done"})
+        if final_idx is not None and s["messages"][final_idx].get("content") and not cancelled:
+            asyncio.create_task(self._name(s))      # the session title; the answer itself is shown as streamed, never re-rendered
+
+    def _receipt(self, st: "TurnStats", stopped: bool) -> dict:
         """What the harness itself knows about the result: tests it saw run, the page it measured, console errors it caught.
         The status is computed here, not claimed by the model."""
-        tests = info.get("test_last")
+        tests, page = st.test_last, st.page
         console = None
         b = self.browser
-        if b is not None and getattr(b, "alive", False) and any(str(n).startswith("browser_") for n in info["tools"]):
-            console = {"errors": sum(1 for c in list(b.console) if c.get("t", 0) >= t0 and c.get("level") in ("error", "exception"))}
-        changed = bool(info["changes"])
+        if b is not None and getattr(b, "alive", False) and any(str(n).startswith("browser_") for n in st.tools):
+            console = {"errors": sum(1 for c in list(b.console) if c.get("t", 0) >= st.t0 and c.get("level") in ("error", "exception"))}
         if stopped:
-            status, reason = "stopped", "the run ended before the model reported"
-        elif not changed:
+            status, reason = "stopped", st.reason or "the run ended before the model reported"
+        elif not st.changes:
             status, reason = "done", "no files changed"
         else:
             proofs, doubts = [], []
@@ -1224,8 +1310,8 @@ class Agent:
                 if isinstance(t.get("turn"), int) and isinstance(t.get("title"), str) and t["title"].strip():
                     titles[str(t["turn"])] = t["title"].strip()[:60]
             save(s)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("titles failed: %s", e)
         return titles
 
     async def _present(self, s, idx, user_idx, question, answer, hints):
