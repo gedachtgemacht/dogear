@@ -76,6 +76,7 @@ class TurnStats:
     held: tuple | None = None                          # code the model pasted into the chat (salvaged into a file)
     abort: bool = False
     reason: str = ""
+    prompt_tokens: int = 0                             # the largest prompt the model saw in this turn
 
 
 def _call_parts(c: dict) -> tuple[str, dict]:
@@ -383,6 +384,8 @@ class Agent:
         self._carry: TurnStats | None = None       # the run's statistics while its self-check pass runs
         self.last_task, self.last_steps = None, 0   # outcome of the last task turn (phase 3)
         self.mode = "edit"                           # the live permission mode; the UI may change it while a turn runs
+        self.last_tokens = 0
+        self._plan_cp: str | None = None             # the checkpoint a plan execution started from
 
     async def sync_mcp(self, root: str):
         try:
@@ -613,7 +616,8 @@ class Agent:
             specs, allowed = self._toolbox(prof, cfg.mode, _task)
             for _ in range(MAX_STEPS):
                 _trim(s["messages"], int(cfg.num_ctx * 0.7))
-                msgs = [{"role": "system", "content": system}] + _wire(s["messages"])
+                view = self._task_window(s, _task) if _task else s["messages"]
+                msgs = [{"role": "system", "content": system}] + _wire(view)
                 if st.shot:
                     msgs.append({"role": "user", "content": "Screenshot of the browser after your last action:", "images": [st.shot]})
                     st.shot = None
@@ -628,6 +632,7 @@ class Agent:
                     msg["tool_calls"] = calls
                 s["messages"].append(msg)
                 ev = done.get("eval_count", 0)
+                st.prompt_tokens = max(st.prompt_tokens, int(done.get("prompt_eval_count", 0) or 0))
                 await self.send({"type": "usage", "prompt": done.get("prompt_eval_count", 0), "out": ev,
                                  "tps": round(ev / max(done.get("eval_duration", 1) / 1e9, 0.001), 1), "ctx": cfg.num_ctx})
                 if not calls:
@@ -984,7 +989,7 @@ class Agent:
         the receipt, the checkpoint to undo to, and `done`. Runs on cancellation too, so the UI never looks alive."""
         s["todos"] = ctx.todos
         if _task:                                           # the review turn that may follow has no task and must not overwrite this
-            self.last_task, self.last_steps = ctx.task_done, st.nsteps
+            self.last_task, self.last_steps, self.last_tokens = ctx.task_done, st.nsteps, st.prompt_tokens
         last = not _task or bool(_task.get("last"))      # a plan is reviewed and audited once, after its last task
         gate = ""
         web_files = any(p.lower().endswith((".html", ".htm", ".css", ".js")) for p in st.changes)
@@ -1073,11 +1078,27 @@ class Agent:
                 status, reason = "unverified", "no tests run and no page measured"
         return {"status": status, "reason": reason, "tests": tests, "page": page, "console": console}
 
+    def _task_window(self, s: dict, _task: dict) -> list[dict]:
+        """What the model sees in a task turn: not the whole transcript, only what this task needs.
+        A fresh, small context per task is what makes a plan fit a 32k window and keeps prompt processing short on a laptop:
+        the original request, the approved board, the files changed so far, and the messages of this task."""
+        msgs = s["messages"]
+        start = max((i for i, m in enumerate(msgs) if m["role"] == "user" and (m.get("task") or {}).get("i") == _task["i"]), default=0)
+        request = next((m["content"] for m in msgs if m["role"] == "user" and not m.get("review") and not m.get("task")), "")
+        pm = next((m for m in reversed(msgs[:start]) if m.get("plan")), None)
+        board = "\n".join(f"{k + 1}. {t['content']}" for k, t in enumerate((pm or {}).get("plan", {}).get("tasks", [])))
+        changed = cp.changed_since(Path(s["root"]), self._plan_cp) if self._plan_cp else []
+        brief = ("[Briefing for this task]\nOriginal request:\n" + request[:3000]
+                 + (f"\n\nApproved plan:\n{board}" if board else "")
+                 + (f"\n\nFiles changed so far in this plan: {', '.join(changed[:40])}" if changed else ""))
+        return [{"role": "user", "content": brief}, {"role": "assistant", "content": "Understood. I will carry out the current task."}] + msgs[start:]
+
     async def run_plan(self, pm: dict, tasks: list[dict], model: str, think: bool, mode: str, num_ctx: int, review_on: bool):
         """Phase 3: carry out an approved board one task per turn. Each task ends with complete_current_task (logged, next task)
         or request_replan (the plan goes back to the user with the reason). Review pass and quality gate run after the last task."""
         s, plan, n = self.session, pm["plan"], len(tasks)
         log = plan.setdefault("log", [])
+        self._plan_cp = await asyncio.to_thread(cp.checkpoint, Path(s["root"]), "dogear: plan start")
         for i, t in enumerate(tasks):
             s["todos"] = [{"content": x["content"], "status": "completed" if k < i else "in_progress" if k == i else "pending"}
                           for k, x in enumerate(tasks)]
@@ -1102,7 +1123,7 @@ class Agent:
                 raise
             out = self.last_task or {"status": "unfinished", "summary": "the model ended the turn without closing the task"}
             entry = {"i": i, "content": t["content"], "status": out["status"], "summary": out.get("summary") or out.get("reason", ""),
-                     "secs": round(time.time() - t0), "steps": self.last_steps}
+                     "secs": round(time.time() - t0), "steps": self.last_steps, "tokens": self.last_tokens}
             log.append(entry)
             save(s)
             await self.send({"type": "plan_task", "i": i, "n": n, **entry})

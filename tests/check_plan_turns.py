@@ -30,9 +30,11 @@ cp.checkpoint = lambda *a, **k: "deadbeef"
 mem.prompt_block = lambda root, text: ("", {"memory": 0, "snippets": 0})
 llm.has_vision = lambda client, model: asyncio.sleep(0, False)
 script: list = []          # what the fake model does, in order: ("call", name, args) | ("text", content)
+seen_msgs: list = []       # every message list the fake model received
 
 
 async def fake_stream(client, model, msgs, tools, think, num_ctx):
+    seen_msgs.append(msgs)
     step = script.pop(0) if script else ("text", "nothing more")
     if step[0] == "call":
         yield "call", {"function": {"name": step[1], "arguments": step[2]}}
@@ -106,7 +108,29 @@ async def main():
     nudges = [m for m in ag.session["messages"] if m.get("review") and "complete_current_task" in m.get("content", "")]
     check("the model was nudged to close the task (twice)", len(nudges) == 2, str(len(nudges)))
 
-    # 5. outside plan execution the closing tools do not exist for the model
+    # 5. a task turn sees a briefing and its own messages, not the transcript of earlier turns
+    events = []
+
+    async def send(ev):
+        events.append(ev)
+    ag = A.Agent(send, client=None, browser=None)
+    ag.session = A.new_session(str(root))
+    ag.session["messages"] += [{"role": "user", "content": "Build the thing", "mode": "plan"},
+                               {"role": "assistant", "content": "plan", "plan": {"reasoning": "r", "tasks": [{"content": "first"}, {"content": "second"}], "status": "approved"}},
+                               {"role": "user", "content": "Task 1 of 2: first", "mode": "auto", "task": {"i": 0, "n": 2, "content": "first"}},
+                               {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "Read", "arguments": {"file_path": "x"}}}]},
+                               {"role": "tool", "tool_name": "Read", "content": "NOISE FROM TASK ONE " * 50},
+                               {"role": "assistant", "content": "Done: first", "task_result": {"status": "done", "summary": "first"}}]
+    seen_msgs.clear()
+    script[:] = [("call", "complete_current_task", {"summary": "second done and checked"})]
+    await ag.turn("Task 2 of 2: second", "m", False, "auto", 8192, False, False, None, _task={"i": 1, "n": 2, "content": "second", "last": True})
+    view = seen_msgs[0]
+    joined = " ".join(str(m.get("content", "")) for m in view)
+    check("the task turn starts with a briefing (request + board)", "Original request" in joined and "1. first" in joined and "2. second" in joined)
+    check("earlier tasks' tool noise is not in the window", "NOISE FROM TASK ONE" not in joined)
+    check("the window is small", len(view) <= 5, str(len(view)))
+
+    # 6. outside plan execution the closing tools do not exist for the model
     events = []
 
     async def send(ev):
