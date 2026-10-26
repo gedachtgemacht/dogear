@@ -630,7 +630,8 @@ class Agent:
             specs, allowed = self._toolbox(prof, cfg.mode, _task)
             for _ in range(MAX_STEPS):
                 _trim(s["messages"], int(cfg.num_ctx * 0.7))
-                view = self._task_window(s, _task) if _task else s["messages"]
+                # a task turn, and the review pass that follows a plan, see a briefing plus their own messages, not the transcript
+                view = self._task_window(s, _task) if _task or (_review and self._plan_cp) else s["messages"]
                 msgs = [{"role": "system", "content": system}] + _wire(view)
                 if st.shot:
                     msgs.append({"role": "user", "content": "Screenshot of the browser after your last action:", "images": [st.shot]})
@@ -1153,12 +1154,15 @@ class Agent:
                 status, reason = "unverified", "no tests run and no page measured"
         return {"status": status, "reason": reason, "tests": tests, "page": page, "console": console, "flows": st.flows}
 
-    def _task_window(self, s: dict, _task: dict) -> list[dict]:
-        """What the model sees in a task turn: not the whole transcript, only what this task needs.
-        A fresh, small context per task is what makes a plan fit a 32k window and keeps prompt processing short on a laptop:
-        the original request, the approved board, the files changed so far, and the messages of this task."""
+    def _task_window(self, s: dict, _task: dict | None) -> list[dict]:
+        """What the model sees in a task turn, or in the review pass after a plan: not the whole transcript, only what this
+        turn needs. A fresh, small context per task is what makes a plan fit a 32k window and keeps prompt processing short
+        on a laptop: the original request, the approved board, the files changed so far, and the messages of this turn."""
         msgs = s["messages"]
-        start = max((i for i, m in enumerate(msgs) if m["role"] == "user" and (m.get("task") or {}).get("i") == _task["i"]), default=0)
+        if _task:
+            start = max((i for i, m in enumerate(msgs) if m["role"] == "user" and (m.get("task") or {}).get("i") == _task["i"]), default=0)
+        else:                                            # the review pass: from its own prompt on
+            start = max((i for i, m in enumerate(msgs) if m["role"] == "user" and m.get("review")), default=0)
         request = next((m["content"] for m in msgs if m["role"] == "user" and not m.get("review") and not m.get("task")), "")
         pm = next((m for m in reversed(msgs[:start]) if m.get("plan")), None)
         board = "\n".join(f"{k + 1}. {t['content']}" for k, t in enumerate((pm or {}).get("plan", {}).get("tasks", [])))
@@ -1167,7 +1171,8 @@ class Agent:
                  + (f"\n\nApproved plan:\n{board}" if board else "")
                  + (f"\n\nFiles changed so far in this plan: {', '.join(changed[:40])}" if changed else "")
                  + self._direction((pm or {}).get("plan", {})))
-        return [{"role": "user", "content": brief}, {"role": "assistant", "content": "Understood. I will carry out the current task."}] + msgs[start:]
+        return [{"role": "user", "content": brief}, {"role": "assistant", "content": "Understood. I will carry out the current task."
+                 if _task else "Understood. I will review the result of this plan."}] + msgs[start:]
 
     @staticmethod
     def _direction(plan: dict) -> str:
@@ -1231,6 +1236,7 @@ class Agent:
                                 model, think, "plan", num_ctx, False, False, None)
                 return
         plan["status"] = "done"
+        self._plan_cp = None                              # later plain runs in this session are not plan turns
         save(s)
         await self.send({"type": "plan_status", "status": "done"})
         await self.send({"type": "notice", "text": f"Plan finished: {sum(1 for e in log if e.get('status') == 'done')} of {n} tasks closed by the model."})

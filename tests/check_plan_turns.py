@@ -93,6 +93,9 @@ async def main():
     check("the board marks the task completed", all(t["status"] == "completed" for t in ag.session["todos"]) or not ag.session["todos"])
     names = [e["name"] for e in ev if e["type"] == "tool"]
     check("complete_current_task was offered and used", "complete_current_task" in names, str(names))
+    rv = seen_msgs[-1]                                     # what the review pass saw
+    check("the review pass sees a briefing and its own prompt, not the task transcript",
+          rv[1]["content"].startswith("[Briefing") and "Review pass" in rv[-1]["content"] and not any("complete_current_task" in str(m.get("tool_calls")) for m in rv), str([m["role"] for m in rv]))
 
     # 2. not the last task: no gate, no review
     ag, ev = await run([("call", "Write", {"file_path": "a.html", "content": "<p>x</p>"}),
