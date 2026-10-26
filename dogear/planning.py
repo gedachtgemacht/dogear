@@ -34,6 +34,21 @@ EXEC_PROMPT = (
     "back to the user. Every task turn must end with one of these two calls.\n")
 
 
+def with_look_pass(tasks: list[dict], plan: dict, ref) -> list[dict]:
+    """The board was planned before the user picked a look, so it may not contain a task that applies it (a plan over an
+    existing page often only verifies). When a library look was picked, a closing task makes the look a task of its own."""
+    if not isinstance(ref, int):
+        return tasks
+    look = next((r for r in plan.get("references") or [] if r.get("id") == ref), None)
+    if not look:
+        return tasks
+    label = look.get("label") or "the chosen look"
+    return tasks + [{"content": f"Look pass: make every page of this plan visibly {label}; restyle what is not",
+                     "detail": "The user picked this look on the plan card. Open the page(s) in the browser, compare with the look's "
+                               "technique in the briefing (palette logic, type, signature move), rework the styling until it is "
+                               "unmistakably that look, and keep behaviour and content unchanged."}]
+
+
 def complete_current_task(ctx, summary=""):
     summary = " ".join(str(summary or "").split())[:600]
     if len(summary) < 8:

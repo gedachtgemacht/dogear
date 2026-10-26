@@ -51,6 +51,10 @@ check("request_replan records the reason", ctx3.task_done["status"] == "replan" 
 check("execution tools are not in the planning toolbox", not any(n in planning.PLAN_TOOLS for n in planning.EXEC_TOOLS))
 check("the execution prompt tells the model how a task turn ends", "complete_current_task" in planning.EXEC_PROMPT and "request_replan" in planning.EXEC_PROMPT)
 check("Agent.run_plan exists", callable(getattr(agent.Agent, "run_plan", None)))
+_plan = {"references": [{"id": 298, "label": "Clay"}]}
+_tasks = [{"content": "Verify the page", "detail": ""}]
+check("a picked look adds a closing look pass", [t["content"] for t in planning.with_look_pass(_tasks, _plan, 298)] == ["Verify the page", "Look pass: make every page of this plan visibly Clay; restyle what is not"])
+check("surprise, none or an unknown id add nothing", all(planning.with_look_pass(_tasks, _plan, r) == _tasks for r in ("surprise", "none", None, 5)))
 
 
 print("ALL PASS" if ok_all else "SOME FAILED")

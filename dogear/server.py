@@ -20,7 +20,7 @@ from . import agent as A
 from . import browser as br
 from . import checkpoint as cpt
 from . import worktrees as W
-from . import llm, profiles, remote, tools
+from . import llm, planning, profiles, remote, tools
 from . import memory as mem
 from . import library, learning, flows
 from .brand import NAME
@@ -444,6 +444,7 @@ async def on_plan_approve(c: Conn, m: dict):
         await c.send({"type": "notice", "text": "The plan has no tasks left."})
         return
     ref = m.get("reference")
+    edited = planning.with_look_pass(edited, pm["plan"], ref)
     pm["plan"].update(status="approved", tasks=edited, log=[], reference=ref if ref in ("none", "surprise") or isinstance(ref, int) else None)
     c.ag.session["todos"] = [{"content": t["content"], "status": "pending"} for t in edited]
     A.save(c.ag.session)
