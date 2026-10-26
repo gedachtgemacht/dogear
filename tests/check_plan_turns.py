@@ -27,6 +27,7 @@ root.mkdir()
 profiles.get_profile = lambda client, model: asyncio.sleep(0, profiles.Profile(model))
 profiles.note_issue = lambda *a, **k: None
 cp.checkpoint = lambda *a, **k: "deadbeef"
+cp.changed_since = lambda root, sha: []
 mem.prompt_block = lambda root, text: ("", {"memory": 0, "snippets": 0})
 llm.has_vision = lambda client, model: asyncio.sleep(0, False)
 script: list = []          # what the fake model does, in order: ("call", name, args) | ("text", content)
@@ -77,6 +78,7 @@ async def run(steps, *, last=True, gate=True, mode="auto"):
     GATE["on"] = gate
     ag = A.Agent(send, client=None, browser=None)
     ag.session = A.new_session(str(root))
+    ag._plan_cp = "deadbeef"                               # as run_plan sets it: the turn belongs to a plan
     script[:] = list(steps)
     await ag.turn("Task 1 of 1: build the page", "m", False, mode, 8192, False, False, None,
                   _task={"i": 0, "n": 1, "content": "build the page", "last": last})
