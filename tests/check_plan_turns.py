@@ -50,6 +50,8 @@ async def noop(*a, **k):
     return None
 
 
+check("only similar library hits become directions", [h["id"] for h in A._similar(
+    [{"id": 1, "score": 0.86}, {"id": 2, "score": 0.60}, {"id": 3, "score": 0.54}])] == [1, 2])
 A.Agent.sync_mcp = noop
 A.Agent._name = noop
 A.Agent._present = noop

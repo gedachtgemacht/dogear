@@ -381,11 +381,11 @@ function planCard(t, plan) {
   const dir = el("div", "pc-dir");
   const drawDir = () => {
     dir.innerHTML = "";
-    const refs = plan.references || [];
-    if (!refs.length) { dir.hidden = true; return; }
+    const refs = plan.references;
+    if (!refs) { dir.hidden = true; return; }
     dir.hidden = false;
     const editable = plan.status === "proposed";
-    dir.append(el("div", "pc-dh", editable ? "Direction: pick a look, or let the model choose" : "Direction"));
+    dir.append(el("div", "pc-dh", !editable ? "Direction" : refs.length ? "Direction: pick a look, or let the model choose" : "Direction: nothing similar in the library; let the model choose"));
     const row = el("div", "pc-thumbs");
     const opt = (key, node, title) => {
       const b = el("button", "pc-th" + (direction === key ? " on" : "")); b.type = "button"; b.title = title || "";

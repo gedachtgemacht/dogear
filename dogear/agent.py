@@ -81,6 +81,16 @@ class TurnStats:
     flows: dict | None = None                          # the recorded check flows replayed by the gate
 
 
+# The library search returns its best hits whatever the brief; only hits that are about the same kind of page are offered
+# as a direction. Measured with qwen3-embedding: a garden dashboard brief against its own entry scores 0.86, a coffee
+# landing page against a craft-brewery landing page 0.68, a Pomodoro timer against the nearest (a garden dashboard) 0.54.
+SIMILAR_MIN = 0.60
+
+
+def _similar(hits: list[dict]) -> list[dict]:
+    return [h for h in hits if h.get("score", 0) >= SIMILAR_MIN]
+
+
 def _call_parts(c: dict) -> tuple[str, dict]:
     fn = c["function"]
     args = fn.get("arguments") or {}
@@ -388,7 +398,7 @@ class Agent:
         self.mode = "edit"                           # the live permission mode; the UI may change it while a turn runs
         self.last_tokens = 0
         self._plan_cp: str | None = None             # the checkpoint a plan execution started from
-        self._refs: list[dict] = []                  # design plans found for a web brief in the plan phase (the user picks one)
+        self._refs: list[dict] | None = None         # design plans found for a web brief in the plan phase (the user picks one); None: not a web brief
 
     async def sync_mcp(self, root: str):
         try:
@@ -678,7 +688,7 @@ class Agent:
                 if ctx.plan:
                     # planning phase done: the board goes to the user for approval, nothing is executed yet
                     plan = ctx.plan
-                    if self._refs:
+                    if self._refs is not None:        # a web brief: the card offers a direction, even when the library has nothing similar
                         plan["references"] = self._refs
                     body = plan["reasoning"] + "\n\n" + "\n".join(f"{i}. {t['content']}" for i, t in enumerate(plan["tasks"], 1))
                     s["messages"].append({"role": "assistant", "content": body, "plan": plan})
@@ -791,13 +801,13 @@ class Agent:
         skills, skill_names = load_skills(text, ctx.root)
         if skill_names:
             await self.send({"type": "notice", "text": "Skills: " + ", ".join(skill_names)})
-        self._refs = []
+        self._refs = None
         if cfg.mode == "plan" and "web-design" in skill_names:
             # the user picks the direction on the approval card; the model sees the chosen plan in every task briefing
             self._refs = [{"id": h["id"], "problem": h["problem"][:160], "solution": h["solution"][:1500], "score": h.get("score", 0)}
-                          for h in await self._library(text, 3, "design-plan")]
+                          for h in _similar(await self._library(text, 3, "design-plan"))]
         if cfg.mode != "plan" and "web-design" in skill_names:
-            refs = await self._library(text, 2, "design-plan")   # reference designs for page briefs: direction, not templates
+            refs = _similar(await self._library(text, 2, "design-plan"))   # reference designs for page briefs: direction, not templates
             if refs:
                 skills += ("\nDesign plans of similar solved briefs (for direction: how they avoid the default look; do not copy them; "
                            "library_search with full=true returns a complete reference page):\n" + library.format_hits(refs)[:4000] + "\n")
