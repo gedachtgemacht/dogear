@@ -30,6 +30,7 @@ cp.checkpoint = lambda *a, **k: "deadbeef"
 mem.prompt_block = lambda root, text: ("", {"memory": 0, "snippets": 0})
 llm.has_vision = lambda client, model: asyncio.sleep(0, False)
 script: list = []          # what the fake model does, in order: ("call", name, args) | ("text", content)
+TOKENS = {"prompt": 1}     # what the fake model reports as its prompt size
 seen_msgs: list = []       # every message list the fake model received
 
 
@@ -40,7 +41,7 @@ async def fake_stream(client, model, msgs, tools, think, num_ctx):
         yield "call", {"function": {"name": step[1], "arguments": step[2]}}
     else:
         yield "content", step[1]
-    yield "done", {"eval_count": 1, "prompt_eval_count": 1, "eval_duration": 1e9}
+    yield "done", {"eval_count": 1, "prompt_eval_count": TOKENS["prompt"], "eval_duration": 1e9}
 
 
 llm.stream = fake_stream
@@ -103,6 +104,18 @@ async def main():
     ag, ev = await run([("call", "request_replan", {"reason": "utils.py already has this function, tasks 2 and 3 are moot"})], gate=False)
     check("request_replan ends the turn", (ag.last_task or {}).get("status") == "replan")
     check("the reason is kept", "utils.py" in (ag.last_task or {}).get("reason", ""))
+
+    # 3b. the context window fills up mid-loop: told once to close, then stopped with a report
+    TOKENS["prompt"] = 7200                                   # of 8192: over the 85 % line
+    ag, ev = await run([("call", "LS", {"path": "."}), ("call", "LS", {"path": "."}), ("call", "LS", {"path": "."}),
+                        ("call", "LS", {"path": "."}), ("text", "report: the page is styled")], gate=False)
+    warn = [m for m in ag.session["messages"] if m.get("review") and "context window is nearly full" in m.get("content", "")]
+    check("a nearly full context warns the model once, naming the closing call", len(warn) == 1 and "complete_current_task" in warn[0]["content"], str(len(warn)))
+    TOKENS["prompt"] = 7900                                   # over 95 % after the warning: stopped, the report is the last call
+    ag, ev = await run([("call", "LS", {"path": "."}), ("call", "LS", {"path": "."}), ("text", "report: the page is styled")], gate=False)
+    sm = next((m["summary"] for m in ag.session["messages"] if m.get("summary")), {})
+    check("a full context stops the run with a reason and a final report", "Context window full" in (sm.get("receipt") or {}).get("reason", "") and ag.session["messages"][-1]["content"].startswith("report"), str(sm.get("receipt")))
+    TOKENS["prompt"] = 1
 
     # 4. prose instead of a closing call: nudged, then unfinished
     ag, ev = await run([("text", "I think that is all."), ("text", "Done I guess."), ("text", "Really done.")], gate=False)

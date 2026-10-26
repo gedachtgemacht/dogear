@@ -72,6 +72,7 @@ class TurnStats:
     probes: int = 0                                    # diagnostic steps since the last edit (stagnation guard)
     consec: int = 0                                    # failing tool calls in a row
     nudges: int = 0                                    # how often the model was pushed to call a tool
+    ctx_warned: bool = False                           # the model was told the context window is nearly full
     plan_asked: int = 0                                # the plan gate fires once
     held: tuple | None = None                          # code the model pasted into the chat (salvaged into a file)
     abort: bool = False
@@ -634,6 +635,21 @@ class Agent:
                 if st.shot:
                     msgs.append({"role": "user", "content": "Screenshot of the browser after your last action:", "images": [st.shot]})
                     st.shot = None
+                if st.prompt_tokens >= cfg.num_ctx * 0.85:
+                    # the window fills up inside a long tool loop (a style pass measured and edited 70 times); a reply cut
+                    # off mid-sentence closes nothing, so the model is told once to close, and stopped when it did not
+                    if st.ctx_warned and st.prompt_tokens >= cfg.num_ctx * 0.95:
+                        st.abort, st.reason = True, f"Context window full ({st.prompt_tokens // 1000}k of {cfg.num_ctx // 1024}k tokens)"
+                        break
+                    if not st.ctx_warned:
+                        st.ctx_warned = True
+                        close = ("call complete_current_task with a summary of what is done (or request_replan)" if _task
+                                 else "reply with your final report")
+                        s["messages"].append({"role": "user", "review": True, "content": f"The context window is nearly full "
+                                              f"({st.prompt_tokens // 1000}k of {cfg.num_ctx // 1024}k tokens). Stop working and "
+                                              f"{close} now; no further edits or checks."})
+                        msgs.append(s["messages"][-1])
+                        await self.send({"type": "notice", "text": "Context window nearly full: asking the model to close."})
                 content, calls, done = await self._call_model(cfg, msgs, specs, think)
                 if not calls and content.strip() and prof.tools:
                     saved = profiles.salvage_text_calls(content, allowed)
@@ -1022,8 +1038,10 @@ class Agent:
         last = not _task or bool(_task.get("last"))      # a plan is reviewed and audited once, after its last task
         if _task and last and self._plan_cp and not _review:
             # the gate and the receipt judge the whole plan, not only what the last task touched
+            known = set(tools.rel_paths(ctx.root, list(st.changes)))              # the model names files by absolute path
             for path in await asyncio.to_thread(cp.changed_since, ctx.root, self._plan_cp):
-                st.changes.setdefault(path, {"added": 0, "removed": 0, "created": False, "plan": True})
+                if path not in known:
+                    st.changes.setdefault(path, {"added": 0, "removed": 0, "created": False, "plan": True})
         gate = ""
         web_files = any(p.lower().endswith((".html", ".htm", ".css", ".js")) for p in st.changes)
         self._audit_counts = None
