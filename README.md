@@ -1,11 +1,15 @@
+<p align="center">
+  <img src="docs/brand/banner.png" width="820" alt="dogear: the local coding agent that proves its work">
+</p>
+
 # dogear
 
-A coding agent that runs on your own machine, with a workspace you can watch.
+A coding agent that runs on your own machine, with a workspace you can watch, and a receipt for every run.
 
 dogear talks to a local model through [Ollama](https://ollama.com), gives it the tools a coding agent needs (read, write, edit, search, shell, tests, git, a real browser), and shows you what it does while it does it: files being typed, diffs, the terminal, and a live browser that you and the agent share. Nothing leaves your machine unless the agent opens a web page.
 
 <p align="center">
-  <img src="docs/screenshots/session.png" width="820" alt="A session: the chat with tool cards, the agent's reasoning between them and an edit diff; the plan board on the right">
+  <img src="docs/screenshots/session.png" width="820" alt="A finished run: the status block says Verified, with the page audit and console rows of the receipt, then the answer">
 </p>
 
 ## What it does
@@ -138,6 +142,10 @@ uv run python scripts/bench.py             # benchmark all installed models on s
 ## Status
 
 dogear is a personal tool, built in a few weeks, in daily use with local models. It is complete enough to be useful and small enough to read in an afternoon. Things that are known to be rough: visual judgement of the models themselves is weak (that is why the audit measures instead of asking), small models vary a lot between runs, and parallel variants share one browser.
+
+## Brand
+
+The mark is a folded page corner (a dog-ear), the one visual signature of the UI: every panel has that cut corner. Files in `docs/brand/`: `mark.svg`, `banner.png`, `social.png`. One accent colour, amber `#e3a857` on dark and `#b36d12` on light; everything else is grey.
 
 ## License
 

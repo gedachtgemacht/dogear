@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>.b{fill:#1c1917}@media (prefers-color-scheme:dark){.b{fill:#f1ece4}}</style>
+  <path class="b" d="M18 8 H38 L56 26 V46 A10 10 0 0 1 46 56 H18 A10 10 0 0 1 8 46 V18 A10 10 0 0 1 18 8 Z"/>
+  <path d="M38 8 V20 A6 6 0 0 0 44 26 H56 Z" fill="#d97b2c"/>
+</svg>
