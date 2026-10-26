@@ -26,6 +26,15 @@ dogear talks to a local model through [Ollama](https://ollama.com), gives it the
 - **Edit and retry.** Hover a message, edit it and send it again as a new session based on this one; compare the two side by side, keep the files of the one you like. Parallel variants (two to four sessions in their own git worktrees) can be switched on in the settings.
 - **Quality gate for web work.** After changes to HTML/CSS/JS the harness measures the page itself (overflow, contrast, holes in grids, empty boxes, tiny targets, placeholder images, generated-UI tells) at desktop and phone width and starts a fix pass when it finds something. Optionally a copy check proofreads the visible text against the brief.
 - **Direction before the page.** For a web brief planned with Plan first, the approval card shows pictures of the three most similar solved briefs from a library of 300 design plans. Pick one (its palette, type and signature move go into every task briefing), say "surprise me", or none. The audit measures defects; this is the cheap way to get taste.
+
+<p align="center">
+  <img src="docs/screenshots/direction.png" width="820" alt="The approval card of a plan for a coffee roastery site: three pictures of similar solved briefs to pick a direction from, surprise me, or none; then the task list and Approve and run">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/harbor-roast.png" width="820" alt="The page the agent built after the linocut direction was picked: ink on paper, slab headline, a cut roasting pan, a coffee ledger with prices">
+  <br><sub>The result of that plan with the linocut direction picked: built by qwen3.6:35b-a3b in two tasks, 4 minutes, audit clean at desktop and phone width.</sub>
+</p>
 - **Memory.** Notes the agent keeps (decisions, gotchas, commands, preferences) per project (`<project>/.dogear/`) or globally.
 - **Skills.** Markdown skill files with triggers (`skills/*.md`, plus `<project>/.dogear/skills/`) are loaded into the prompt when the task matches: web design, debugging, testing, code review, API design, security review and more.
 - **MCP.** Connect any MCP server over stdio or Streamable HTTP; its tools appear to the model as `mcp__<server>__<tool>`.

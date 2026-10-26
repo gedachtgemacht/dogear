@@ -130,14 +130,31 @@ async def main():
     check("earlier tasks' tool noise is not in the window", "NOISE FROM TASK ONE" not in joined)
     check("the window is small", len(view) <= 5, str(len(view)))
 
-    # 6. the chosen direction reaches the task briefing
+    # 6. the last task of a plan is judged on the whole plan: the gate runs although this task changed nothing
+    events = []
+
+    async def send(ev):
+        events.append(ev)
+    ag = A.Agent(send, client=None, browser=None)
+    ag.session = A.new_session(str(root))
+    cp.changed_since = lambda r, sha: ["index.html"]      # an earlier task of the plan wrote the page
+    ag._plan_cp = "planstart"
+    script[:] = [("call", "complete_current_task", {"summary": "checked the page in the browser"}), ("text", "Review done.")]
+    GATE["on"] = True
+    await ag.turn("Task 2 of 2: verify", "m", False, "auto", 8192, False, False, None, _task={"i": 1, "n": 2, "content": "verify", "last": True})
+    sm = next((e for e in events if e["type"] == "summary"), None)
+    check("the last task's receipt knows the plan's files", sm and any(c["path"] == "index.html" for c in sm["changes"]), str(sm and sm["changes"]))
+    check("the gate ran on the plan's page", any(e["type"] == "review_start" for e in events))
+    cp.changed_since = lambda r, sha: []
+
+    # 7. the chosen direction reaches the task briefing
     from dogear import library as L
     L.get = lambda i, full=False: {"id": i, "solution": "Palette: ink and paper. Type: a wide grotesk. Signature: oversized numerals."}
     check("'surprise' asks for a concept of its own", "distinctive look" in A.Agent._direction({"reference": "surprise"}))
     check("a chosen plan is quoted", "oversized numerals" in A.Agent._direction({"reference": 7}))
     check("no direction adds nothing", A.Agent._direction({"reference": "none"}) == "" and A.Agent._direction({}) == "")
 
-    # 7. outside plan execution the closing tools do not exist for the model
+    # 8. outside plan execution the closing tools do not exist for the model
     events = []
 
     async def send(ev):

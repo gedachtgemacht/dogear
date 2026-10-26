@@ -1002,6 +1002,10 @@ class Agent:
         if _task:                                           # the review turn that may follow has no task and must not overwrite this
             self.last_task, self.last_steps, self.last_tokens = ctx.task_done, st.nsteps, st.prompt_tokens
         last = not _task or bool(_task.get("last"))      # a plan is reviewed and audited once, after its last task
+        if _task and last and self._plan_cp and not _review:
+            # the gate and the receipt judge the whole plan, not only what the last task touched
+            for path in await asyncio.to_thread(cp.changed_since, ctx.root, self._plan_cp):
+                st.changes.setdefault(path, {"added": 0, "removed": 0, "created": False, "plan": True})
         gate = ""
         web_files = any(p.lower().endswith((".html", ".htm", ".css", ".js")) for p in st.changes)
         self._audit_counts = None
