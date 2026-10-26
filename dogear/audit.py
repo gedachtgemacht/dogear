@@ -256,7 +256,9 @@ def static_check(html: str, email: bool = False) -> tuple[list[str], list[str]]:
             floor.append("reduced-motion")
         if "@media" not in low and not _re.search(r"\b(sm|md|lg):", html):
             floor.append("responsive")
-    ext = [u for u in _re.findall(r'(?:src|href)=["\'](https?://[^"\']+)', html)
+    # what the page loads: src= on any tag and href= on <link>; an <a href> to another site is a link, not a resource
+    loads = _re.findall(r'\bsrc=["\'](https?://[^"\']+)', html) + _re.findall(r'<link\b[^>]*\bhref=["\'](https?://[^"\']+)', html, _re.I)
+    ext = [u for u in loads
            if not _re.search(r"fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.tailwindcss\.com|^https?://(www\.)?(example|github\.com|maps\.google|apps\.apple|play\.google)", u)]
     if ext:
         floor.append("external resources")

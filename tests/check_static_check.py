@@ -20,6 +20,10 @@ check("static_report is non-empty for a bad page", "Source checks" in static_rep
 quiet = '<!doctype html><html lang="en"><head><meta name="viewport" content="x"><title>t</title><style>:focus-visible{outline:2px solid}@media (max-width:600px){body{margin:0}}</style></head><body><h1>Plain headline</h1></body></html>'
 check("a quiet page is clean", static_check(quiet) == ([], []))
 check("no animation means no reduced-motion demand", "reduced-motion" not in static_check(quiet)[0])
+_link = quiet.replace("</body>", '<a href="https://instagram.com/x">Instagram</a></body>')
+check("an outbound link is not an external resource", "external resources" not in static_check(_link)[0], str(static_check(_link)[0]))
+_js = quiet.replace("</body>", '<script src="https://cdn.example.net/x.js"></script></body>')
+check("a loaded script is", "external resources" in static_check(_js)[0])
 
 if DS.exists():
     kinds = collections.Counter(); n = 0
