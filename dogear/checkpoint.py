@@ -10,6 +10,8 @@ from pathlib import Path
 
 IGNORE = [".venv/", "venv/", "node_modules/", "__pycache__/", "*.pyc", ".DS_Store", "dist/", "build/", ".env", ".env.*", "*.log"]
 MAX_FILES = 20000
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+last_error = ""        # why the last checkpoint() returned None; shown to the user instead of a silent missing Undo
 ENV = {"GIT_AUTHOR_NAME": "dogear", "GIT_AUTHOR_EMAIL": "dogear@localhost",
        "GIT_COMMITTER_NAME": "dogear", "GIT_COMMITTER_EMAIL": "dogear@localhost"}
 
@@ -47,19 +49,30 @@ def _too_big(root: Path) -> bool:
 
 
 def checkpoint(root: Path, label: str) -> str | None:
-    """Snapshot the working tree. Returns the commit sha, or None if not possible."""
+    """Snapshot the working tree. Returns the commit sha, or None if not possible (see `last_error`)."""
+    global last_error
     root = root.resolve()
-    if not available(root) or not ensure_repo(root) or _too_big(root):
+    last_error = ""
+    if not available(root):
+        last_error = "git is not installed"
+        return None
+    if not ensure_repo(root):
+        last_error = "this directory cannot be made a repository (home or system directory)"
+        return None
+    if _too_big(root):
+        last_error = f"more than {MAX_FILES} files"
         return None
     top = Path(_git(root, "rev-parse", "--show-toplevel").stdout.strip() or root)
     gitdir = Path(_git(root, "rev-parse", "--absolute-git-dir").stdout.strip())
     idx = {"GIT_INDEX_FILE": str(gitdir / "dogear-index")}
     (gitdir / "dogear-index").unlink(missing_ok=True)
-    if _git(top, "add", "-A", "--", str(root), env=idx).returncode != 0:
-        return None
+    # --ignore-errors: an embedded repository without a commit (a worktree left behind, a half-cloned dependency)
+    # must not sink the whole snapshot; git still exits non-zero then, so the tree decides
+    add = _git(top, "add", "-A", "--ignore-errors", "--", str(root), env=idx)
     tree = _git(top, "write-tree", env=idx).stdout.strip()
     (gitdir / "dogear-index").unlink(missing_ok=True)
-    if not tree:
+    if not tree or tree == EMPTY_TREE:
+        last_error = (add.stderr.strip().splitlines() or ["nothing to snapshot"])[-1][:160]
         return None
     parent = _git(top, "rev-parse", "-q", "--verify", "refs/dogear/checkpoints").stdout.strip()
     args = ["commit-tree", tree, "-m", label[:200]] + (["-p", parent] if parent else [])

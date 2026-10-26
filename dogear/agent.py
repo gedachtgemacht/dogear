@@ -616,6 +616,8 @@ class Agent:
             before = None
             if mode != "plan":
                 before = await asyncio.to_thread(cp.checkpoint, ctx.root, f"dogear: before: {text.strip()[:90]}")
+                if before is None and cp.last_error:
+                    await self.send({"type": "notice", "text": f"No undo for this run: {cp.last_error}"})
             self._cp = {"before": before, "root": str(ctx.root)}
         user_idx = sum(1 for m in s["messages"] if m["role"] == "user" and not m.get("review") and not m.get("compact")) - 1
         info = {"sources": [], "changes": {}, "commands": [], "tools": set(), "tests": []}

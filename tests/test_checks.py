@@ -28,6 +28,7 @@ CHECKS = {
     "check_planning.py": ([], set()),
     "check_approvals.py": ([], set()),
     "check_plan_turns.py": ([], set()),
+    "check_checkpoint.py": ([], set()),
     "check_ultra.py": (["--offline"], set()),
     "check_library.py": ([], {"ollama"}),
     "check_audit.py": ([], {"chrome"}),
