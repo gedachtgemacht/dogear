@@ -379,7 +379,11 @@ function planCard(t, plan) {
       if (!editable && direction !== key) b.hidden = true;
       row.append(b);
     };
-    refs.forEach(r => { const im = el("img"); im.loading = "lazy"; im.src = `/api/thumb/${r.id}`; im.alt = r.problem; opt(r.id, im, r.problem.slice(0, 60)); });
+    refs.forEach(r => {
+      const im = el("img"); im.src = `/api/thumb/${r.id}`; im.alt = r.problem;
+      im.onerror = () => { const tx = el("div", "pc-tx", "…"); tx.title = "The picture could not be rendered; the plan text still counts"; im.replaceWith(tx); };
+      opt(r.id, im, r.problem.slice(0, 60));
+    });
     opt("surprise", el("div", "pc-tx", "?"), "Surprise me: a distinctive look of its own");
     opt("none", el("div", "pc-tx", "–"), "No direction");
     dir.append(row);

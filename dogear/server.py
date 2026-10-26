@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import tempfile
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -103,6 +104,8 @@ async def lifespan(_):
     pserver.should_exit = True
     await ptask
     await BROWSER.close()
+    if THUMB_BROWSER is not None:
+        await THUMB_BROWSER.close()
     await client.aclose()
 
 
@@ -150,8 +153,11 @@ async def thumb(entry_id: int):
     page = THUMBS / f"{entry_id}.html"
     page.write_text(e["extra"])
     async with _thumb_lock:
-        if THUMB_BROWSER is None:
-            THUMB_BROWSER = br.Browser(A.DATA / "thumb-profile")
+        if THUMB_BROWSER is None or not THUMB_BROWSER.alive:
+            # a profile of its own per server process: a stale lock from an earlier process must never block thumbnails
+            if THUMB_BROWSER is not None:
+                await THUMB_BROWSER.close()
+            THUMB_BROWSER = br.Browser(Path(tempfile.mkdtemp(prefix="dogear-thumbs-")))
         b = THUMB_BROWSER
         await b.ensure()
         await b.set_viewport(1280, 800)
