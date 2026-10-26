@@ -33,7 +33,7 @@ dogear talks to a local model through [Ollama](https://ollama.com), gives it the
 
 <p align="center">
   <img src="docs/screenshots/harbor-roast.png" width="820" alt="The page the agent built after the linocut direction was picked: ink on paper, slab headline, a cut roasting pan, a coffee ledger with prices">
-  <br><sub>The result of that plan with the linocut direction picked: built by qwen3.6:35b-a3b in two tasks, 4 minutes, audit clean at desktop and phone width.</sub>
+  <br><sub>The result of that plan with the Linocut look picked: built by qwen3.6:35b-a3b in five tasks including the look pass, audit clean at desktop and phone width.</sub>
 </p>
 - **Memory.** Notes the agent keeps (decisions, gotchas, commands, preferences) per project (`<project>/.dogear/`) or globally.
 - **Skills.** Markdown skill files with triggers (`skills/*.md`, plus `<project>/.dogear/skills/`) are loaded into the prompt when the task matches: web design, debugging, testing, code review, API design, security review and more.
