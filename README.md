@@ -30,6 +30,10 @@ dogear talks to a local model through [Ollama](https://ollama.com), gives it the
   <img src="docs/screenshots/workspace.png" width="820" alt="The workspace open next to the chat: the live browser shows the page the agent is building">
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/plan.png" width="820" alt="Plan first: the approved board, carried out one task per turn, each task closed by the model with a one-line summary">
+</p>
+
 ## Quick start
 
 You need Python 3.12+, [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.com) with at least one tool-capable model, and Chrome or Chromium for the browser features.

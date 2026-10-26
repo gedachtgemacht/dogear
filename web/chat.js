@@ -341,8 +341,9 @@ function planCard(t, plan) {
       const e = (plan.log || [])[i];
       if (e && !editable) { r.classList.add("pc-" + e.status); n.textContent = { done: "✓", running: "◌", replan: "↺", stopped: "■", unfinished: "?" }[e.status] || String(i + 1); }
       r.append(n, tx);
-      if (x.detail) r.append(el("div", "pc-d", x.detail));
-      if (e && !editable && e.status !== "running" && e.summary) r.append(el("div", "pc-sum", `${e.summary}${e.secs ? ` · ${plural(e.steps || 0, "step")} · ${mmss(e.secs)}` : ""}`));
+      const closed = e && !editable && e.status !== "running" && e.summary;
+      if (x.detail && !closed) r.append(el("div", "pc-d", x.detail));      // the plan's note until the task has its own summary
+      if (closed) r.append(el("div", "pc-sum", `${e.summary}${e.secs ? ` · ${plural(e.steps || 0, "step")} · ${mmss(e.secs)}` : ""}`));
       if (editable) {
         const up = el("button", "", "↑"), dn = el("button", "", "↓"), rm = el("button", "", "✕");
         up.title = "Move up"; dn.title = "Move down"; rm.title = "Remove";
