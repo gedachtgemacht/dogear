@@ -133,7 +133,6 @@ code { font: 11.5px var(--mono); }
 .ban i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: breathe 1.2s ease-in-out infinite; }
 .bempty { position: absolute; color: var(--mute); font-size: 13px; }
 .lg-error { color: var(--bad); } .lg-warning { color: var(--accent); } .lg-log { color: var(--ink2); }
-.tc.k-browser .th > i { background: var(--info); } .tc.k-browser .th b { color: var(--info); }
 .code { flex: 1; overflow: auto; background: var(--code); padding: 10px 0 24px; font: 12.5px/1.65 var(--mono); tab-size: 4; }
 .l { display: flex; min-width: max-content; padding-right: 20px; }
 .l .n { flex: none; width: 4em; text-align: right; padding-right: 1.4em; color: var(--mute); opacity: .7; user-select: none; }
@@ -363,7 +362,7 @@ button.undo:hover { border-color: var(--bad); color: var(--bad); }
 
 /* ---- turn toolbar, branch bar, outline */
 .turn { position: relative; }
-.tact { position: absolute; right: 0; top: -2px; display: flex; gap: 2px; opacity: 0; transition: opacity .15s; z-index: 2; }
+.tact { position: absolute; right: 0; top: -26px; display: flex; gap: 2px; opacity: 0; transition: opacity .15s; z-index: 2; }
 .turn:hover .tact, .tact.pinned { opacity: 1; }
 .tact button { border: 0; background: var(--panel3); color: var(--ink2); height: 24px; border-radius: 6px; cursor: pointer; font: 12px var(--ui); padding: 0 9px; }
 .tact button:hover { color: var(--ink); }

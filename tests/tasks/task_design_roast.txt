@@ -1,0 +1,11 @@
+Design a one-page website for "Harbor Roast", a small coffee roastery in Portland, Maine. One file index.html, no framework, no external libraries, must run directly in the browser.
+
+Content:
+- Header with the name and a short navigation
+- Opening with one clear promise (honest and concrete, no marketing talk)
+- Three coffees: "Pier" (dark, chocolate and hazelnut, $14.50 / 12 oz), "Fish Market" (medium, orange and caramel, $15.90 / 12 oz), "Beach" (light, blueberry and jasmine, $17.80 / 12 oz)
+- Subscription: 12 oz every two weeks, 5 % off, cancel anytime
+- Opening hours (Tue–Fri 8 am–5 pm, Sat 9 am–2 pm) and address (41 Commercial Street, Portland, ME 04101)
+- Footer with a contact link and an Instagram link
+
+Design: it should look like a real small roastery, not like an AI template. Its own handwriting, clear hierarchy, good readability, clean on phone and desktop. Check the result in the browser at both widths.
