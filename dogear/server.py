@@ -665,6 +665,11 @@ async def ws(sock: WebSocket):
                     asyncio.create_task(browser_msg(m, send))
             elif t == "kill":
                 ag.procs.kill(m["id"])
+            elif t == "mode":
+                # a mode change applies at once, also to the turn that is running; "auto" grants what is waiting
+                if m.get("mode") in ("ask", "edit", "auto"):
+                    cfg["mode"] = m["mode"]
+                    ag.set_mode(m["mode"])
             elif t == "root" and not busy():
                 cfg["root"] = preview_root["path"] = m["root"]
                 asyncio.create_task(ag.sync_mcp(m["root"]))

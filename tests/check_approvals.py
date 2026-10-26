@@ -1,4 +1,5 @@
-"""Open approvals and questions are remembered while they wait, so a window that joins later can answer them.
+"""Open approvals and questions are remembered while they wait, so a window that joins later can answer them;
+switching the mode while a turn runs applies at once, and "Don't ask" grants what is waiting.
 usage: uv run python tests/check_approvals.py"""
 import asyncio
 import sys
@@ -39,6 +40,17 @@ async def main():
     ag.answer_ask("q1", [{"selected": ["A"], "other": ""}])
     check("the question's answer comes back as text", "Choice: A" in await t2)
     check("cleared afterwards", not ag.pending_info)
+    # switching to "auto" while a question is open grants it and tells every window
+    sent.clear()
+    t3 = asyncio.create_task(ag._ask("c2", "Bash", {"command": "pytest"}))
+    await asyncio.sleep(0.05)
+    ag.set_mode("auto")
+    check("'Don't ask' during a run grants the open approval", await t3 is True)
+    await asyncio.sleep(0.05)
+    check("every window is told the question is gone", any(m["type"] == "approval_done" and m["id"] == "c2" for m in sent))
+    check("the live mode is auto from now on", ag.mode == "auto")
+    ag.set_mode("plan")
+    check("plan is not a mode you can switch to mid-run", ag.mode == "auto")
 
 
 asyncio.run(main())

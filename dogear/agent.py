@@ -334,6 +334,7 @@ class Agent:
         self.asks: dict[str, asyncio.Future] = {}
         self._cp: dict = {}
         self.last_task, self.last_steps = None, 0   # outcome of the last task turn (phase 3)
+        self.mode = "edit"                           # the live permission mode; the UI may change it while a turn runs
 
     async def sync_mcp(self, root: str):
         try:
@@ -364,6 +365,16 @@ class Agent:
             self.always.add(key)
         if (f := self.pending.get(cid)) and not f.done():
             f.set_result(ok)
+            asyncio.create_task(self.send({"type": "approval_done", "id": cid, "ok": ok}))   # every window drops the question
+
+    def set_mode(self, mode: str):
+        """Switch the permission mode while a turn runs. 'auto' also grants whatever is waiting right now."""
+        if mode not in ("ask", "edit", "auto"):
+            return
+        self.mode = mode
+        if mode == "auto":
+            for cid in list(self.pending):
+                self.answer(cid, True)
 
     # -- tools that need the agent itself --------------------------------------
     async def _ask_user(self, cid: str, questions: list[dict]) -> str:
@@ -508,6 +519,8 @@ class Agent:
                _task: dict | None = None):
         """One user turn. _task is set by run_plan: {i, n, content, last} while an approved board is carried out."""
         s = self.session
+        if mode != "plan":
+            self.mode = mode
         ctx = tools.Ctx(Path(s["root"]), self.send, self.procs, self.browser)
         ctx.todos = s.get("todos", [])
         if not _review and _approx_tokens(_wire(s["messages"])) > int(num_ctx * 0.7):
@@ -1243,7 +1256,7 @@ class Agent:
                 return "Error: " + err, False
         if name == "Bash" and tools.DENY.search(args.get("command", "")):
             return "This command is blocked.", False
-        if self._needs_approval(name, args, mode):
+        if self._needs_approval(name, args, self.mode if mode != "plan" else mode):
             if not await self._ask(cid, name, args):
                 return "The user declined this action. Choose another approach or ask what they want.", False
         try:

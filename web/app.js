@@ -27,6 +27,7 @@ const ON = {
     $("#model").title = o ? o.title : "";
   },
   approval(m) { approvalBox(m); },
+  approval_done() { const t = S.turns.find(x => x.st.state === "waiting") || S.turn; S.ask = null; if (t && t.st.state === "waiting") waitingDone(t); },
   ask(m) { askBox(m); },
   sub(m) { const c = S.cards[m.id]; if (c) { c.tb.append(el("div", "subline", m.text)); } },
   result(m) {
@@ -189,9 +190,11 @@ function setBusy(b) {
 }
 const MODE_TXT = { ask: "Will ask before every edit and every command", edit: "Will ask before running commands", auto: "Will not ask" };
 const MODES = ["ask", "edit", "auto"];
-function setMode(v) {
+function setMode(v, tell = true) {
   if (!MODES.includes(v)) v = "edit";
+  const changed = S.mode !== v;
   S.mode = v; document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); $("#h-mode").textContent = MODE_TXT[v];
+  if (tell && changed) sendWS({ type: "mode", mode: v });   // applies at once, also to a running turn
 }
 
 const SLASHES = [
@@ -263,7 +266,7 @@ async function refresh() {
     for (const m of models.includes(c.model) ? models : [c.model, ...models]) {
       const o = new Option(m, m); o.title = [pf[m]?.label, ...(pf[m]?.notes || [])].filter(Boolean).join("\n"); sel.append(o);
     }
-    sel.value = c.model; $("#think").checked = c.think; $("#review").checked = c.review !== false; $("#ctx").value = String(c.num_ctx); $("#root").value = S.root = c.root; setMode(c.mode);
+    sel.value = c.model; $("#think").checked = c.think; $("#review").checked = c.review !== false; $("#ctx").value = String(c.num_ctx); $("#root").value = S.root = c.root; setMode(c.mode, false);
   }
   renderSessions();
 }

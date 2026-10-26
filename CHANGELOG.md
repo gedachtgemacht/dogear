@@ -16,7 +16,7 @@
 - Modes renamed by what they ask (Ask all, Ask commands, Don't ask); "Plan first" is a toggle on the composer, not a mode. The kanban column is a one-line task strip above the chat.
 - Quieter: sans for what the UI says, mono only for machine data; dots carry state, no second accent colour; diffs no longer wrap and are capped; drawer with a scrim; settings grouped.
 - Cut from the UI and the model's toolbox (code kept): Ultra, rating and snippet learning, outline and pins, answer re-rendering, twelve generic skills (now in `skills/extra`). Parallel variants are a setting.
-- Open approvals and questions reach windows that join later.
+- Open approvals and questions reach windows that join later. Switching the mode applies at once, also to the running turn; "Don't ask" grants whatever is waiting, and every window drops the question.
 - Checkpoints survive an embedded repository without a commit (a left-over worktree); when a checkpoint is impossible, the run says why instead of silently offering no Undo.
 - Answers render Markdown tables, numbered lists and rules; the prompt asks for plain words instead of emoji markers.
 - README, architecture notes, MIT license.
