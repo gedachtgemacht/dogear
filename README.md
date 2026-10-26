@@ -32,7 +32,7 @@ dogear talks to a local model through [Ollama](https://ollama.com), gives it the
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/harbor-roast.png" width="820" alt="The page the agent built after the linocut direction was picked: ink on paper, slab headline, a cut roasting pan, a coffee ledger with prices">
+  <img src="docs/screenshots/harbor-roast.png" width="820" alt="The page the agent built after the Linocut look was picked: ink on paper, slab headline, a carved coffee bean, gouged wave dividers">
   <br><sub>The result of that plan with the Linocut look picked: built by qwen3.6:35b-a3b in five tasks including the look pass, audit clean at desktop and phone width.</sub>
 </p>
 - **Memory.** Notes the agent keeps (decisions, gotchas, commands, preferences) per project (`<project>/.dogear/`) or globally.
