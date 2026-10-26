@@ -13,7 +13,12 @@ One Python process, one browser tab, one local model. This page follows a reques
 7. **After the last tool call** the final text is the answer. Then, depending on what happened: a review pass (the model checks its result against the request), the quality gate for web files (`audit.py` measures the page in the browser at desktop and phone width, `static_check` reads the source; findings start a fix pass), the copy check for new pages, auto-learning into the library when tests went green, memory suggestions from the helper model, a title for the session.
 8. **`summary`** closes the turn in the UI: steps, seconds, changed files, sources, commands, the checkpoint to undo to. `present.py` adds display blocks (facts, steps, code) without changing the text.
 
-Plan mode is the same loop with read-only tools plus `kanban_create_tasks`; that call ends the phase with a `plan_proposed` event. `plan_approve` starts a normal turn with the approved board in the prompt; `plan_reject` plans again with the feedback.
+## The plan flow
+
+1. **Plan** (mode `plan`): the same loop with read-only tools plus `kanban_create_tasks`; that call ends the phase with a `plan_proposed` event.
+2. **Approval**: the board is shown as a card. The user edits, reorders, adds or removes tasks and approves with a permission mode, or rejects with feedback (`plan_reject` plans again).
+3. **Execution** (`Agent.run_plan`): the harness hands the model one task per turn ("Task 2 of 5: …", with the summaries of the finished tasks). In these turns the model has two extra tools: `complete_current_task(summary)` closes the task and ends the turn, `request_replan(reason)` stops the execution and sends the plan back to the user with the reason, after which the model plans the remaining work again. A task turn that ends without either call is nudged twice and then logged as `unfinished`. The board (`todos`) is kept by the harness, the review pass and the quality gate run once after the last task, and every task leaves a log entry (`plan.log`: status, summary, steps, seconds) that the plan card shows.
+4. **Learning**: the rating under the result and green test runs feed the snippet library (see `library.py`).
 
 ## Permission model
 

@@ -641,3 +641,9 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 .autosaved { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font: 12px var(--ui); color: var(--mute); }
 .autosaved button.link { border: 0; background: none; color: var(--mute); cursor: pointer; text-decoration: underline; padding: 0; font: inherit; }
 .autosaved button.link:hover { color: var(--ink); }
+
+/* ---- plan execution (phase 3): task turns and the task log on the plan card */
+.tbadge { display: inline-block; font: 600 10.5px var(--mono); color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 5px; margin-right: 8px; vertical-align: 1px; }
+.pc-row.pc-done .pc-n { color: var(--ok); } .pc-row.pc-running .pc-n { color: var(--accent); } .pc-row.pc-replan .pc-n, .pc-row.pc-stopped .pc-n, .pc-row.pc-unfinished .pc-n { color: var(--bad); }
+.pc-sum { grid-column: 2 / -1; font: 12px var(--mono); color: var(--mute); margin-top: 2px; }
+.pc-s.done { color: var(--ok); border-color: var(--ok); } .pc-s.replan, .pc-s.stopped { color: var(--bad); border-color: var(--bad); }

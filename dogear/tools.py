@@ -94,6 +94,7 @@ class Ctx:
         self.subagent = self.skill = self.ask_user = self.ultra = None   # wired by the agent
         self.todos: list[dict] = []
         self.plan = None          # set by kanban_create_tasks in the planning phase
+        self.task_done = None     # set by complete_current_task / request_replan while a plan is carried out
         self.call_id = ""
         self.meta: dict = {}
 

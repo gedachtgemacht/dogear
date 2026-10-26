@@ -330,6 +330,7 @@ class Agent:
         self.mirror = None
         self.asks: dict[str, asyncio.Future] = {}
         self._cp: dict = {}
+        self.last_task, self.last_steps = None, 0   # outcome of the last task turn (phase 3)
 
     async def sync_mcp(self, root: str):
         try:
@@ -494,7 +495,9 @@ class Agent:
         return {"before": before, "after": _approx_tokens(_wire(s["messages"])), "replaced": len(msgs)}
 
     # -- one user turn ---------------------------------------------------------
-    async def turn(self, text: str, model: str, think: bool, mode: str, num_ctx: int, review_on: bool = False, _review: bool = False, images: list | None = None):
+    async def turn(self, text: str, model: str, think: bool, mode: str, num_ctx: int, review_on: bool = False, _review: bool = False, images: list | None = None,
+               _task: dict | None = None):
+        """One user turn. _task is set by run_plan: {i, n, content, last} while an approved board is carried out."""
         s = self.session
         ctx = tools.Ctx(Path(s["root"]), self.send, self.procs, self.browser)
         ctx.todos = s.get("todos", [])
@@ -518,7 +521,8 @@ class Agent:
         if names and not await llm.has_vision(self.client, model):
             await self.send({"type": "notice", "text": f"{model} cannot see images; they are ignored for this run. Pick a vision model."})
             names = []
-        s["messages"].append({"role": "user", "content": text, "mode": mode, **({"imgs": names} if names else {}), **({"review": True} if _review else {})})
+        s["messages"].append({"role": "user", "content": text, "mode": mode, **({"imgs": names} if names else {}), **({"review": True} if _review else {}),
+                              **({"task": {"i": _task["i"], "n": _task["n"], "content": _task["content"]}} if _task else {})})
         if s["title"] == "New session" and not _review:
             s["title"] = text.strip().splitlines()[0][:48]
         save(s)
@@ -564,6 +568,8 @@ class Agent:
                 await self.send({"type": "notice", "text": f"Library: {len(hits)} matching solution{'s' if len(hits) != 1 else ''}"})
             if prof.thinking:
                 think = True                              # the planning phase thinks, even if the user switched it off
+        if _task:
+            extra += planning.EXEC_PROMPT
         if s.get("todos"):
             mark = {"completed": "[x]", "in_progress": "[~]", "pending": "[ ]"}
             extra += "\nCurrent task list (the user may have edited it; keep it in sync with TodoWrite):\n" + "\n".join(
@@ -613,7 +619,10 @@ class Agent:
             if mode == "plan":                            # the phase decides what the model sees
                 names = [n for n in planning.PLAN_TOOLS if n in tools.TOOLS]
             else:
-                names = [n for n in names if n != "kanban_create_tasks"]
+                hide = {"kanban_create_tasks"} | (set() if _task else set(planning.EXEC_TOOLS))
+                names = [n for n in names if n not in hide]
+                if _task:
+                    names += [n for n in planning.EXEC_TOOLS if n in tools.TOOLS and n not in names]
             specs = [tools.TOOLS[n][2] for n in names] + (self.mcp.specs() if prof.tools else [])
             allowed = set(names) | {sp["function"]["name"] for sp in self.mcp.specs()}
             for _ in range(MAX_STEPS):
@@ -703,13 +712,16 @@ class Agent:
                     stripped = content.strip()
                     unfinished = bool(info["tools"] and 8 < len(stripped) < 500 and not re.search(r"[.!?…:;)\]}\"'`>*_|]\s*$", stripped))
                     plan_missing = mode == "plan" and not ctx.plan and not _review
-                    if pasted or announced or refused or unfinished or plan_missing:
+                    task_missing = bool(_task) and not ctx.task_done and not abort
+                    if pasted or announced or refused or unfinished or plan_missing or task_missing:
                         # small models paste code into the chat, or announce an action and then stop without calling a tool
                         nudges += 1
                         profiles.note_issue(model, "announced")
                         s["messages"].append({"role": "user", "review": True, "content":
                                               ("This is the planning phase. Do not answer in prose: finish by calling kanban_create_tasks with your "
                                                "reasoning and the task list. If you still need information, read it first, then call the tool." if plan_missing else
+                                               "This task turn must end with a tool call: complete_current_task with a one-line summary if the task is "
+                                               "done and verified, or request_replan with the reason if the plan has to change." if task_missing else
                                                "You pasted code into the chat. Do not do that. Create the file now with the Write tool at the "
                                                "path from the request, then verify it (run it, or open it in the browser)." if pasted else
                                                "You DO have tools and full access to the project: Glob, Grep, Read, Write, Edit, Bash. "
@@ -815,6 +827,15 @@ class Agent:
                     await self.send({"type": "todos", "items": ctx.todos})
                     await self.send({"type": "plan_proposed", "plan": plan, "user_idx": user_idx})
                     break
+                if ctx.task_done:
+                    # phase 3: the model closed the task; the driver (run_plan) hands out the next one
+                    td = ctx.task_done
+                    body = ("Done: " + td["summary"]) if td["status"] == "done" else ("Needs a new plan: " + td["reason"])
+                    s["messages"].append({"role": "assistant", "content": body, "task_result": td})
+                    final_idx = len(s["messages"]) - 1
+                    s["todos"] = ctx.todos
+                    await self.send({"type": "todos", "items": ctx.todos})
+                    break
                 if abort:
                     break
             else:
@@ -842,8 +863,10 @@ class Agent:
             await self.send({"type": "error", "text": f"{type(e).__name__}: {e}"})
         finally:
             s["todos"] = ctx.todos
+            self.last_task, self.last_steps = ctx.task_done, nsteps
+            last = not _task or bool(_task.get("last"))      # a plan is reviewed and audited once, after its last task
             gate = ""
-            if not _review and not cancelled and final_idx is not None and mode != "plan" and any(
+            if last and not _review and not cancelled and final_idx is not None and mode != "plan" and any(
                     p.lower().endswith((".html", ".htm", ".css", ".js")) for p in info["changes"]):
                 users = [m["content"] for m in s["messages"] if m["role"] == "user" and not m.get("review") and isinstance(m.get("content"), str)]
                 brief = "\n\n".join(users)
@@ -853,7 +876,7 @@ class Agent:
                 gate = await self._audit_changed(ctx.root, list(info["changes"]), model, brief if wrote_page else "")
                 if gate:
                     await self.send({"type": "notice", "text": "Design audit found problems; running a fix pass."})
-            if not _review and not cancelled and final_idx is not None and (gate or (
+            if last and not _review and not cancelled and final_idx is not None and (gate or (
                     review_on and prof.review and info["changes"] and nsteps >= 6)):
                 # a second pass: check the result against the request (and fix what the audit measured)
                 self._carry = {"nsteps": nsteps, "t0": t0, "info": info, "text": text}
@@ -892,9 +915,55 @@ class Agent:
                         and not s["messages"][final_idx].get("plan")):
                     asyncio.create_task(self._auto_learn(s, final_idx, user_idx, ctx.root, orig_text, s["messages"][final_idx].get("content", ""),
                                                          list(info["changes"])))
-                if nsteps >= 5 and mode != "plan" and not cancelled and prof.tier != "small" and (info["changes"] or info["commands"]):
+                if last and nsteps >= 5 and mode != "plan" and not cancelled and prof.tier != "small" and (info["changes"] or info["commands"]):
                     asyncio.create_task(self._suggest(ctx.root, user_idx, orig_text, s["messages"][final_idx]["content"],
                                                       list(info["changes"]), list(info["commands"])))
+
+    async def run_plan(self, pm: dict, tasks: list[dict], model: str, think: bool, mode: str, num_ctx: int, review_on: bool):
+        """Phase 3: carry out an approved board one task per turn. Each task ends with complete_current_task (logged, next task)
+        or request_replan (the plan goes back to the user with the reason). Review pass and quality gate run after the last task."""
+        s, plan, n = self.session, pm["plan"], len(tasks)
+        log = plan.setdefault("log", [])
+        for i, t in enumerate(tasks):
+            s["todos"] = [{"content": x["content"], "status": "completed" if k < i else "in_progress" if k == i else "pending"}
+                          for k, x in enumerate(tasks)]
+            await self.send({"type": "todos", "items": s["todos"]})
+            done_lines = "\n".join(f"{e['i'] + 1}. {e['content']} - {e.get('summary', '')}" for e in log if e.get("status") == "done")
+            prompt = (f"Task {i + 1} of {n}: {t['content']}" + (f"\n{t['detail']}" if t.get("detail") else "")
+                      + (f"\n\nDone so far:\n{done_lines}" if done_lines else "")
+                      + "\n\nDo only this task. When it is finished and verified, call complete_current_task with a one-line summary. "
+                        "If it cannot be done as planned or the plan has to change, call request_replan with the reason.")
+            self.last_task, self.last_steps = None, 0
+            t0 = time.time()
+            await self.send({"type": "plan_task", "i": i, "n": n, "status": "running", "content": t["content"]})
+            try:
+                await self.turn(prompt, model, think, mode, num_ctx, review_on, False, None,
+                                _task={"i": i, "n": n, "content": t["content"], "last": i == n - 1})
+            except asyncio.CancelledError:
+                log.append({"i": i, "content": t["content"], "status": "stopped", "summary": "", "secs": round(time.time() - t0), "steps": self.last_steps})
+                plan["status"] = "stopped"
+                save(s)
+                await self.send({"type": "plan_task", "i": i, "n": n, **log[-1]})
+                await self.send({"type": "plan_status", "status": "stopped"})
+                raise
+            out = self.last_task or {"status": "unfinished", "summary": "the model ended the turn without closing the task"}
+            entry = {"i": i, "content": t["content"], "status": out["status"], "summary": out.get("summary") or out.get("reason", ""),
+                     "secs": round(time.time() - t0), "steps": self.last_steps}
+            log.append(entry)
+            save(s)
+            await self.send({"type": "plan_task", "i": i, "n": n, **entry})
+            if out["status"] == "replan":
+                plan["status"], plan["feedback"] = "replan", out["reason"]
+                save(s)
+                await self.send({"type": "plan_status", "status": "replan", "feedback": out["reason"]})
+                await self.turn(f"Execution stopped at task {i + 1} of {n} ({t['content']}). Reason: {out['reason']}\n\n"
+                                f"Done so far:\n{done_lines or '(nothing yet)'}\n\nRe-plan the remaining work and submit a new board with kanban_create_tasks.",
+                                model, think, "plan", num_ctx, False, False, None)
+                return
+        plan["status"] = "done"
+        save(s)
+        await self.send({"type": "plan_status", "status": "done"})
+        await self.send({"type": "notice", "text": f"Plan finished: {sum(1 for e in log if e.get('status') == 'done')} of {n} tasks closed by the model."})
 
     async def _name(self, s: dict):
         """Name the session by its topic and, for a branch, say in one line how it differs from the original.

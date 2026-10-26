@@ -10,6 +10,7 @@
 - The UI script is split into six files by concern (core, sidebar, chat, workspace, board, app); no behaviour change.
 - `uv run pytest` runs every check that can run on the machine and skips the ones that need a browser, a model or the design dataset.
 - `/init` writes `DOGEAR.md` (it still said `KERF.md`).
+- Plan flow phase 3: after approval the harness runs the board one task per turn; `complete_current_task` and `request_replan` close a task or send the plan back; task log on the plan card; review and quality gate once after the last task.
 - README, architecture notes, MIT license.
 
 ## Before 0.2.0

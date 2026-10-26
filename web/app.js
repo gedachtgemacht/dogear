@@ -54,6 +54,8 @@ function handle(m) {
       if (m.auto) { if (t && m.entries.length) libraryAutoLine(t, m.entries); sbBadges(); if (SB.tab === "memory") loadMemory(); break; } if (t?.ratePaint && t.rateEl) t.ratePaint({ value: 1 }, m); sbBadges(); if (SB.tab === "memory") loadMemory(); break; }
     case "plan_proposed": { const t = S.turns[m.user_idx] || S.turn; if (t) planCard(t, m.plan); S.draft = true; renderRail(S.todos); if (!S.planOpen) planShow(true); break; }
     case "plan_status": { const c = S.planCard; if (c) c.update(m); S.draft = false; renderRail(S.todos); break; }
+    case "plan_task": { const c = S.planCard; if (c) c.task(m);
+      if (m.status === "running") { if (S.cur) { S.cur = null; } newTurn(m.content, [], S.mode, { i: m.i, n: m.n }); log.scrollTop = log.scrollHeight; } break; }
     case "auto_saved": { const t = S.turns[m.user_idx] || S.turn; if (t) autoSavedLine(t, m.items); loadMemory(); break; }
     case "usage": {
       S.tok += m.out; const pct = m.prompt / m.ctx, i = $("#meter i");
@@ -97,7 +99,7 @@ function renderSession(s) {
       if (m.compact) {
         const d = el("details", "compactmark"); d.append(el("summary", "", `Earlier conversation condensed (${m.replaced || "?"} messages)`), el("pre", "", m.content.replace(/^\[[^\]]*\]\n*/, "")));
         clearEmpty(); log.append(d); S.turn = null;
-      } else if (!m.review) newTurn(m.content, (m.imgs || []).map(n => "/img/" + n), m.mode || "edit");
+      } else if (!m.review) newTurn(m.task ? m.task.content : m.content, (m.imgs || []).map(n => "/img/" + n), m.mode || "edit", m.task || null);
     }
     else if (m.role === "assistant") {
       const t = turn(), calls = m.tool_calls || [];

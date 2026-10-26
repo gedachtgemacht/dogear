@@ -1,7 +1,9 @@
-"""Planning phase: the model may only read, think and fill the board.
+"""The plan flow: plan (read-only) -> approval -> execution one task at a time -> learn.
 
-In plan mode the harness shows the model read-only tools plus kanban_create_tasks. Calling it ends the phase: the board
-goes to the user for approval (and edits) before anything is executed.
+Phase 1, plan mode: the harness shows the model read-only tools plus kanban_create_tasks. Calling it ends the phase.
+Phase 2: the board goes to the user, who edits, approves or rejects it with feedback.
+Phase 3: Agent.run_plan hands the model one task per turn. complete_current_task records the task and ends the turn;
+request_replan stops the execution and sends the plan back to the user with the model's reason.
 """
 from .tools import ToolError, _spec
 
@@ -20,6 +22,35 @@ PLAN_PROMPT = (
     "Name files and commands where you know them. The last task verifies the result (run it, run the tests, open the page). "
     "Do not write the plan as prose; the user approves the board, not your text. "
     "If the request is ambiguous in a way that changes the plan, ask with AskUser before you create the board.\n")
+
+
+EXEC_TOOLS = ("complete_current_task", "request_replan")
+
+EXEC_PROMPT = (
+    "\nPLAN EXECUTION. The user approved a task board and the harness gives you one task at a time. Work only on the current task; "
+    "the board is kept by the harness, do not use TodoWrite to tick tasks off.\n"
+    "When the task is finished and verified, call complete_current_task with a one-line summary (what changed, how you checked it). "
+    "If the task cannot be done as planned, or the plan has to change, call request_replan with the reason instead; the plan then goes "
+    "back to the user. Every task turn must end with one of these two calls.\n")
+
+
+def complete_current_task(ctx, summary=""):
+    summary = " ".join(str(summary or "").split())[:600]
+    if len(summary) < 8:
+        raise ToolError("Give a one-line `summary`: what you did and how you verified it.")
+    ctx.task_done = {"status": "done", "summary": summary}
+    for t in ctx.todos:
+        if t.get("status") == "in_progress":
+            t["status"] = "completed"
+    return "Task recorded as done. The harness hands you the next task."
+
+
+def request_replan(ctx, reason=""):
+    reason = " ".join(str(reason or "").split())[:1200]
+    if len(reason) < 8:
+        raise ToolError("Give a `reason`: what does not fit the plan and what should change.")
+    ctx.task_done = {"status": "replan", "reason": reason}
+    return "Execution paused. The plan goes back to the user with your reason."
 
 
 def kanban_create_tasks(ctx, reasoning="", tasks=None):
@@ -58,4 +89,12 @@ TOOLS = {
                        "detail": {"type": "string", "description": "optional: files, commands, how to check it is done"}},
                        "required": ["content"]}}},
         ["reasoning", "tasks"])),
+    "complete_current_task": ("read", complete_current_task, _spec(
+        "complete_current_task",
+        "Plan execution: the current task is finished and verified. Records it and ends this task turn.",
+        {"summary": {"type": "string", "description": "one line: what you changed and how you checked it"}}, ["summary"])),
+    "request_replan": ("read", request_replan, _spec(
+        "request_replan",
+        "Plan execution: the current task cannot be done as planned or the plan has to change. Stops the execution and sends the plan back to the user.",
+        {"reason": {"type": "string", "description": "what does not fit and what should change"}}, ["reason"])),
 }

@@ -448,7 +448,7 @@ async def ws(sock: WebSocket):
                 ag.turn_task = task
             elif t in ("plan_approve", "plan_reject") and not busy():
                 pm = last_plan_message()
-                if not pm or pm["plan"].get("status") != "proposed":
+                if not pm or pm["plan"].get("status") not in ("proposed", "replan"):
                     await send({"type": "notice", "text": "There is no plan waiting for approval."})
                     continue
                 if t == "plan_approve":
@@ -460,16 +460,17 @@ async def ws(sock: WebSocket):
                     if not edited:
                         await send({"type": "notice", "text": "The plan has no tasks left."})
                         continue
-                    pm["plan"].update(status="approved", tasks=edited)
+                    pm["plan"].update(status="approved", tasks=edited, log=[])
                     ag.session["todos"] = [{"content": t_["content"], "status": "pending"} for t_ in edited]
                     A.save(ag.session)
                     await send({"type": "plan_status", "status": "approved", "tasks": edited})
                     await send({"type": "todos", "items": ag.session["todos"]})
                     mode = m.get("mode") if m.get("mode") in ("ask", "edit", "auto") else "edit"
                     cfg["mode"] = mode
-                    detail = "\n".join(f"- {t_['content']}" + (f" ({t_['detail']})" if t_["detail"] else "") for t_ in edited)
-                    start_turn("The plan is approved. Carry it out task by task, in order, and keep the task list current with TodoWrite "
-                               "(exactly one task in_progress). Do not add scope.\n\nApproved plan:\n" + detail, mode)
+                    # phase 3: the harness hands the model one task per turn (Agent.run_plan)
+                    ag.session["root"] = preview_root["path"] = cfg["root"]
+                    task = asyncio.create_task(ag.run_plan(pm, edited, cfg["model"], bool(cfg["think"]), mode, cfg["num_ctx"], bool(cfg.get("review", True))))
+                    ag.turn_task = task
                 else:
                     fb = str(m.get("feedback", "")).strip()[:2000] or "The user did not like the plan. Rethink it."
                     pm["plan"].update(status="rejected", feedback=fb)

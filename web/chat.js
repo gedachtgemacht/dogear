@@ -36,11 +36,13 @@ function emptyState() {
 const clearEmpty = () => $(".empty-state", log)?.remove();
 
 /* ---- turns: one user message, its work (process) and the answer (focus) */
-function newTurn(text, imgs = [], mode = S.mode) {
+function newTurn(text, imgs = [], mode = S.mode, task = null) {
   clearEmpty();
   const t = { el: el("div", "turn"), work: el("div", "work"), answer: el("div", "answer"), after: el("div", "after"), sum: null, raw: "", pres: null, code: [],
-              i: S.turns.length, text, mode };
-  const u = el("div", "u"), i = el("div", "in"); i.append(el("span", "", text));
+              i: S.turns.length, text, mode, task };
+  const u = el("div", "u"), i = el("div", "in");
+  if (task) i.append(el("span", "tbadge", `Task ${task.i + 1}/${task.n}`));   // a turn the harness started while carrying out a plan
+  i.append(el("span", "", text));
   if (imgs.length) { const g = el("div", "imgs"); imgs.forEach(src => { const im = el("img"); im.src = src; im.onclick = () => window.open(src, "_blank"); g.append(im); }); i.append(g); }
   u.append(i);
   t.work.hidden = true; t.el.append(u, t.work, t.answer, t.after); log.append(t.el);
@@ -326,8 +328,11 @@ function planCard(t, plan) {
       let tx;
       if (editable) { tx = el("input"); tx.value = x.content; tx.oninput = () => { x.content = tx.value; }; tx.spellcheck = false; }
       else tx = el("span", "pc-t", x.content);
+      const e = (plan.log || [])[i];                                  // phase 3: what happened to this task
+      if (e && !editable) { r.classList.add("pc-" + e.status); n.textContent = { done: "✓", running: "◌", replan: "↺", stopped: "■", unfinished: "?" }[e.status] || String(i + 1); }
       r.append(n, tx);
       if (x.detail) r.append(el("div", "pc-d", x.detail));
+      if (e && !editable && e.status !== "running" && e.summary) r.append(el("div", "pc-sum", `${e.summary}${e.secs ? ` · ${plural(e.steps || 0, "step")} · ${e.secs}s` : ""}`));
       if (editable) {
         const up = el("button", "", "↑"), dn = el("button", "", "↓"), rm = el("button", "", "✕");
         up.title = "Move up"; dn.title = "Move down"; rm.title = "Remove";
@@ -344,7 +349,7 @@ function planCard(t, plan) {
       rows.append(add);
     }
   };
-  const label = { proposed: "waiting for your approval", approved: "approved", rejected: "rejected" };
+  const label = { proposed: "waiting for your approval", approved: "running task by task", rejected: "rejected", replan: "the model asks for a new plan", done: "done", stopped: "stopped" };
   const paint = () => {
     state.textContent = label[plan.status] || plan.status; state.className = "pc-s " + plan.status;
     act.innerHTML = "";
@@ -362,12 +367,14 @@ function planCard(t, plan) {
       };
       act.append(mode, go, rej);
     } else if (plan.status === "rejected" && plan.feedback) act.append(el("div", "pc-fb", "Feedback: " + plan.feedback));
+    else if (plan.status === "replan" && plan.feedback) act.append(el("div", "pc-fb", "Reason: " + plan.feedback));
   };
   box.append(head, why, rows, act); t.after.append(box);
   plan.status = plan.status || "proposed";
   draw(); paint();
   S.planCard = {
     update: m => { plan.status = m.status; if (m.tasks) { tasks.length = 0; m.tasks.forEach(x => tasks.push({ content: x.content, detail: x.detail || "" })); } if (m.feedback) plan.feedback = m.feedback; draw(); paint(); },
+    task: m => { plan.log = plan.log || []; plan.log[m.i] = m; draw(); },
   };
 }
 
